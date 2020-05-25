@@ -29,7 +29,7 @@ EXTERN g_card_bundle_table:QWORD
 endif
 
 ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
-EXTERN  g_write_watch_table:QWORD
+EXTERN  g_sw_ww_table:QWORD
 EXTERN  g_sw_ww_enabled_for_gc_heap:BYTE
 endif
 
@@ -47,6 +47,9 @@ ifdef _DEBUG
 extern JIT_WriteBarrier_Debug:proc
 endif
 
+extern JIT_InternalThrow:proc
+
+ifndef FEATURE_SATORI_GC
 
 ; JIT_ByRefWriteBarrier has weird semantics, see usage in StubLinkerX86.cpp
 ;
@@ -54,14 +57,9 @@ endif
 ;   RDI - address of ref-field (assigned to)
 ;   RSI - address of the data  (source)
 ;   RCX is trashed
-;   RAX is trashed
-;
-;   NOTE: Keep in sync with RBM_CALLEE_TRASH_WRITEBARRIER_BYREF and RBM_CALLEE_GCTRASH_WRITEBARRIER_BYREF
-;         if you add more trashed registers.
-;
+;   RAX is trashed when FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP is defined
 ; Exit:
 ;   RDI, RSI are incremented by SIZEOF(LPVOID)
-;
 LEAF_ENTRY JIT_ByRefWriteBarrier, _TEXT
         mov     rcx, [rsi]
 
@@ -141,7 +139,7 @@ ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
         je      CheckCardTable
         mov     rax, rdi
         shr     rax, 0Ch ; SoftwareWriteWatch::AddressToTableByteIndexShift
-        add     rax, qword ptr [g_write_watch_table]
+        add     rax, qword ptr [g_sw_ww_table]
         cmp     byte ptr [rax], 0h
         jne     CheckCardTable
         mov     byte ptr [rax], 0FFh
@@ -154,6 +152,8 @@ endif
         cmp     rcx, [g_ephemeral_high]
         jnb     Exit
 
+        ; do the following checks only if we are allowed to trash rax
+        ; otherwise we don't have enough registers
 ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
         mov     rax, rcx
 
@@ -301,6 +301,32 @@ LEAF_ENTRY JIT_CheckedWriteBarrier, _TEXT
         mov     [rcx], rdx
         ret
 LEAF_END_MARKED JIT_CheckedWriteBarrier, _TEXT
+
+
+
+else  ;FEATURE_SATORI_GC     ##########################################################################
+
+Section segment para 'DATA'
+
+        align   16
+
+        public  JIT_WriteBarrier_Loc
+JIT_WriteBarrier_Loc:
+        dq 0
+
+extern JIT_WriteBarrier:proc
+
+LEAF_ENTRY  JIT_WriteBarrier_Callable, _TEXT
+        ; JIT_WriteBarrier(Object** dst, Object* src)
+
+        ; this will be needed if JIT_WriteBarrier relocated/bashed
+        ; also will need to update locations for checked and byref jit helpers
+        ; jmp     QWORD PTR [JIT_WriteBarrier_Loc]
+
+        jmp     JIT_WriteBarrier
+LEAF_END JIT_WriteBarrier_Callable, _TEXT
+
+endif  ; FEATURE_SATORI_GC
 
 ; The following helper will access ("probe") a word on each page of the stack
 ; starting with the page right beneath rsp down to the one pointed to by r11.

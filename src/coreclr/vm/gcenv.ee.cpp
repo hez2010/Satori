@@ -130,9 +130,11 @@ static void ScanStackRoots(Thread * pThread, promote_func* fn, ScanContext* sc)
     // Either we are in a concurrent situation (in which case the thread is unknown to
     // us), or we are performing a synchronous GC and we are the GC thread, holding
     // the threadstore lock.
+    // Or we are scanning our own stack, which is always ok.
 
     _ASSERTE(dbgOnly_IsSpecialEEThread() ||
                 GetThreadNULLOk() == NULL ||
+                GetThreadNULLOk() == sc->thread_under_crawl ||
                 // this is for background GC threads which always call this when EE is suspended.
                 IsGCSpecialThread() ||
                 (GetThread() == ThreadSuspend::GetSuspensionThread() && ThreadStore::HoldingThreadStore()));
@@ -143,7 +145,7 @@ static void ScanStackRoots(Thread * pThread, promote_func* fn, ScanContext* sc)
     if (InlinedCallFrame::FrameHasActiveCall(pTopFrame))
     {
         // It is an InlinedCallFrame with active call. Get SP from it.
-        InlinedCallFrame* pInlinedFrame = dac_cast<PTR_InlinedCallFrame>(pTopFrame);
+        InlinedCallFrame* pInlinedFrame = (InlinedCallFrame*)pTopFrame;
         topStack = (Object **)pInlinedFrame->GetCallSiteSP();
     }
 #endif // FEATURE_CONSERVATIVE_GC || USE_FEF
@@ -201,13 +203,11 @@ static void ScanStackRoots(Thread * pThread, promote_func* fn, ScanContext* sc)
 #if defined(FEATURE_EH_FUNCLETS)
         flagsStackWalk |= GC_FUNCLET_REFERENCE_REPORTING;
 #endif // defined(FEATURE_EH_FUNCLETS)
-        gcctx.pScannedSlots = NULL;
         pThread->StackWalkFrames( GcStackCrawlCallBack, &gcctx, flagsStackWalk);
-        delete gcctx.pScannedSlots;
     }
 
     GCFrame* pGCFrame = pThread->GetGCFrame();
-    while (pGCFrame != GCFRAME_TOP)
+    while (pGCFrame != NULL)
     {
         pGCFrame->GcScanRoots(fn, sc);
         pGCFrame = pGCFrame->PtrNextFrame();
@@ -235,7 +235,7 @@ static void ScanTailCallArgBufferRoots(Thread* pThread, promote_func* fn, ScanCo
     if (argBuffer == NULL || argBuffer->GCDesc == NULL)
         return;
 
-    if (argBuffer->State == TAILCALLARGBUFFER_INACTIVE)
+    if (argBuffer->State == TAILCALLARGBUFFER_ABANDONED)
         return;
 
     bool instArgOnly = argBuffer->State == TAILCALLARGBUFFER_INSTARG_ONLY;
@@ -284,6 +284,29 @@ static void ScanTailCallArgBufferRoots(Thread* pThread, promote_func* fn, ScanCo
             break;
         }
     }
+}
+
+void GCToEEInterface::GcScanCurrentStackRoots(promote_func* fn, ScanContext* sc)
+{
+    STRESS_LOG1(LF_GCROOTS, LL_INFO10, "GC Stack Scan: Promotion Phase = %d\n", sc->promotion);
+
+    Thread* pThread = GetThread();
+    sc->thread_under_crawl = pThread;
+    sc->concurrent = FALSE;
+
+    STRESS_LOG2(LF_GC | LF_GCROOTS, LL_INFO100, "{ Starting scan of Thread %p ID = %x\n", pThread, pThread->GetThreadId());
+
+#ifdef FEATURE_EVENT_TRACE
+    sc->dwEtwRootKind = kEtwGCRootKindStack;
+#endif // FEATURE_EVENT_TRACE
+    ScanStackRoots(pThread, fn, sc);
+    ScanTailCallArgBufferRoots(pThread, fn, sc);
+    ScanThreadStaticRoots(pThread, fn, sc);
+#ifdef FEATURE_EVENT_TRACE
+    sc->dwEtwRootKind = kEtwGCRootKindOther;
+#endif // FEATURE_EVENT_TRACE
+
+     STRESS_LOG2(LF_GC | LF_GCROOTS, LL_INFO100, "Ending scan of Thread %p ID = 0x%x }\n", pThread, pThread->GetThreadId());
 }
 
 void GCToEEInterface::GcScanRoots(promote_func* fn, int condemned, int max_gen, ScanContext* sc)
@@ -388,10 +411,8 @@ bool GCToEEInterface::RefCountedHandleCallbacks(Object * pObject)
 #endif
 #ifdef FEATURE_COMWRAPPERS
     bool isRooted = false;
-    if (ComWrappersNative::IsManagedObjectComWrapper((OBJECTREF)pObject, &isRooted))
-    {
+    if (ComWrappersNative::HasManagedObjectComWrapper((OBJECTREF)pObject, &isRooted))
         return isRooted;
-    }
 #endif
 #ifdef FEATURE_OBJCMARSHAL
     bool isReferenced = false;
@@ -400,20 +421,6 @@ bool GCToEEInterface::RefCountedHandleCallbacks(Object * pObject)
 #endif
 
     return false;
-}
-
-void GCToEEInterface::TriggerClientBridgeProcessing(MarkCrossReferencesArgs* args)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-#ifdef FEATURE_JAVAMARSHAL
-    Interop::TriggerClientBridgeProcessing(args);
-#endif // FEATURE_JAVAMARSHAL
 }
 
 void GCToEEInterface::SyncBlockCacheDemote(int max_gen)
@@ -461,7 +468,7 @@ gc_alloc_context * GCToEEInterface::GetAllocContext()
         return nullptr;
     }
 
-    return &t_runtime_thread_locals.alloc_context.m_GCAllocContext;
+    return &t_runtime_thread_locals.alloc_context;
 }
 
 void GCToEEInterface::GcEnumAllocContexts(enum_alloc_context_func* fn, void* param)
@@ -478,29 +485,16 @@ void GCToEEInterface::GcEnumAllocContexts(enum_alloc_context_func* fn, void* par
         Thread * pThread = NULL;
         while ((pThread = ThreadStore::GetThreadList(pThread)) != NULL)
         {
-            ee_alloc_context* palloc_context = pThread->GetEEAllocContext();
+            gc_alloc_context* palloc_context = pThread->GetAllocContext();
             if (palloc_context != nullptr)
             {
-                gc_alloc_context* ac = &palloc_context->m_GCAllocContext;
-                fn(ac, param);
-                // The GC may zero the alloc_ptr and alloc_limit fields of AC during enumeration and we need to keep
-                // m_CombinedLimit up-to-date. Note that the GC has multiple threads running this enumeration concurrently
-                // with no synchronization. If you need to change this code think carefully about how that concurrency
-                // may affect the results.
-                if (ac->alloc_limit == 0 && palloc_context->m_CombinedLimit != 0)
-                {
-                    palloc_context->m_CombinedLimit = 0;
-                }
+                fn(palloc_context, param);
             }
         }
     }
     else
     {
-        fn(&g_global_alloc_context.m_GCAllocContext, param);
-        if (g_global_alloc_context.m_GCAllocContext.alloc_limit == 0 && g_global_alloc_context.m_CombinedLimit != 0)
-        {
-            g_global_alloc_context.m_CombinedLimit = 0;
-        }
+        fn(&g_global_alloc_context, param);
     }
 }
 
@@ -547,6 +541,28 @@ void GCToEEInterface::DisablePreemptiveGC()
     Thread* pThread = ::GetThreadNULLOk();
     if (pThread)
     {
+        pThread->DisablePreemptiveGC();
+    }
+}
+
+void GCToEEInterface::GcPoll()
+{
+    CONTRACTL{
+        THROWS;
+        GC_TRIGGERS;
+        MODE_COOPERATIVE;
+    }
+    CONTRACTL_END;
+
+    if (g_TrapReturningThreads)
+    {
+        Thread* pThread = ::GetThread();
+        _ASSERTE(!ThreadStore::HoldingThreadStore(pThread));
+#ifdef FEATURE_HIJACK
+        pThread->UnhijackThread();
+#endif // FEATURE_HIJACK
+
+        pThread->EnablePreemptiveGC();
         pThread->DisablePreemptiveGC();
     }
 }
@@ -980,7 +996,7 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
         if (g_sw_ww_enabled_for_gc_heap && (args->write_watch_table != nullptr))
         {
             assert(args->is_runtime_suspended);
-            g_write_watch_table = args->write_watch_table;
+            g_sw_ww_table = args->write_watch_table;
         }
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 
@@ -1069,7 +1085,6 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
             ThreadSuspend::RestartEE(FALSE, TRUE);
         }
         return; // unlike other branches we have already done cleanup so bailing out here
-
     case WriteBarrierOp::StompEphemeral:
         assert(args->is_runtime_suspended && "the runtime must be suspended here!");
         // StompEphemeral requires a new ephemeral low and a new ephemeral high
@@ -1080,16 +1095,8 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
         g_region_to_generation_table = args->region_to_generation_table;
         g_region_shr = args->region_shr;
         g_region_use_bitwise_write_barrier = args->region_use_bitwise_write_barrier;
-#if defined(HOST_ARM64)
-        // Only allow bitwise write barriers if LSE atomics are present
-        if (!g_arm64_atomics_present)
-        {
-            g_region_use_bitwise_write_barrier = false;
-        }
-#endif
         stompWBCompleteActions |= ::StompWriteBarrierEphemeral(args->is_runtime_suspended);
         break;
-
     case WriteBarrierOp::Initialize:
         assert(args->is_runtime_suspended && "the runtime must be suspended here!");
         // This operation should only be invoked once, upon initialization.
@@ -1115,46 +1122,59 @@ void GCToEEInterface::StompWriteBarrier(WriteBarrierParameters* args)
         g_region_to_generation_table = args->region_to_generation_table;
         g_region_shr = args->region_shr;
         g_region_use_bitwise_write_barrier = args->region_use_bitwise_write_barrier;
-        g_ephemeral_low = args->ephemeral_low;
-        g_ephemeral_high = args->ephemeral_high;
-#if defined(HOST_ARM64)
-        // Only allow bitwise write barriers if LSE atomics are present
-        if (!g_arm64_atomics_present)
-        {
-            g_region_use_bitwise_write_barrier = false;
-        }
-#endif
         stompWBCompleteActions |= ::StompWriteBarrierResize(true, false);
 
         // StompWriteBarrierResize does not necessarily bash g_ephemeral_low
-        // usages, so we must do so here. This is particularly true on x86/Arm64,
+        // usages, so we must do so here. This is particularly true on x86,
         // where StompWriteBarrierResize will not bash g_ephemeral_low when
         // called with the parameters (true, false), as it is above.
+        g_ephemeral_low = args->ephemeral_low;
+        g_ephemeral_high = args->ephemeral_high;
         stompWBCompleteActions |= ::StompWriteBarrierEphemeral(true);
         break;
-
     case WriteBarrierOp::SwitchToWriteWatch:
 #ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
         assert(args->is_runtime_suspended && "the runtime must be suspended here!");
         assert(args->write_watch_table != nullptr);
-        g_write_watch_table = args->write_watch_table;
+        g_sw_ww_table = args->write_watch_table;
         g_sw_ww_enabled_for_gc_heap = true;
         stompWBCompleteActions |= ::SwitchToWriteWatchBarrier(true);
 #else
         assert(!"should never be called without FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP");
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
         break;
-
     case WriteBarrierOp::SwitchToNonWriteWatch:
 #ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
         assert(args->is_runtime_suspended && "the runtime must be suspended here!");
-        g_write_watch_table = 0;
+        g_sw_ww_table = 0;
         g_sw_ww_enabled_for_gc_heap = false;
         stompWBCompleteActions |= ::SwitchToNonWriteWatchBarrier(true);
 #else
         assert(!"should never be called without FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP");
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
         break;
+
+#if FEATURE_SATORI_GC
+    case WriteBarrierOp::StartConcurrentMarkingSatori:
+        g_sw_ww_table = args->write_watch_table;
+        g_sw_ww_enabled_for_gc_heap = true;
+        stompWBCompleteActions |= ::SwitchToWriteWatchBarrier(is_runtime_suspended);
+        if (!is_runtime_suspended)
+        {
+            // If runtime is not suspended, force all threads to see the changed state before
+            // observing future allocations.
+            FlushProcessWriteBuffers();
+        }
+
+        return;
+
+    case WriteBarrierOp::StopConcurrentMarkingSatori:
+        assert(args->is_runtime_suspended && "the runtime must be suspended here!");
+        g_sw_ww_table = args->write_watch_table;
+        g_sw_ww_enabled_for_gc_heap = false;
+        stompWBCompleteActions |= ::SwitchToNonWriteWatchBarrier(true);
+        return;
+#endif
 
     default:
         assert(!"unknown WriteBarrierOp enum");
@@ -1443,9 +1463,6 @@ struct SuspendableThreadStubArguments
     class Thread* Thread;
     bool HasStarted;
     CLREvent ThreadStartedEvent;
-#ifdef __APPLE__
-    const WCHAR* name;
-#endif //__APPLE__
 };
 
 struct ThreadStubArguments
@@ -1455,9 +1472,6 @@ struct ThreadStubArguments
     HANDLE Thread;
     bool HasStarted;
     CLREvent ThreadStartedEvent;
-#ifdef __APPLE__
-    const WCHAR* name;
-#endif //__APPLE__
 };
 
 namespace
@@ -1476,9 +1490,6 @@ namespace
         args.ThreadStart = threadStart;
         args.Thread = nullptr;
         args.HasStarted = false;
-#ifdef __APPLE__
-        args.name = name;
-#endif //__APPLE__
         if (!args.ThreadStartedEvent.CreateAutoEventNoThrow(FALSE))
         {
             return false;
@@ -1491,7 +1502,7 @@ namespace
         EX_CATCH
         {
         }
-        EX_END_CATCH
+        EX_END_CATCH(SwallowAllExceptions)
 
         if (!args.Thread)
         {
@@ -1503,10 +1514,6 @@ namespace
         {
             SuspendableThreadStubArguments* args = static_cast<SuspendableThreadStubArguments*>(argument);
             assert(args != nullptr);
-
-#ifdef __APPLE__
-            SetThreadName(GetCurrentThread(), args->name);
-#endif //__APPLE__
 
             ClrFlsSetThreadType(ThreadType_GC);
             args->Thread->SetGCSpecial();
@@ -1565,9 +1572,6 @@ namespace
         args.Argument = argument;
         args.ThreadStart = threadStart;
         args.Thread = INVALID_HANDLE_VALUE;
-#ifdef __APPLE__
-        args.name = name;
-#endif //__APPLE__
         if (!args.ThreadStartedEvent.CreateAutoEventNoThrow(FALSE))
         {
             return false;
@@ -1577,10 +1581,6 @@ namespace
         {
             ThreadStubArguments* args = static_cast<ThreadStubArguments*>(argument);
             assert(args != nullptr);
-
-#ifdef __APPLE__
-            SetThreadName(GetCurrentThread(), args->name);
-#endif //__APPLE__
 
             ClrFlsSetThreadType(ThreadType_GC);
             STRESS_LOG_RESERVE_MEM(GC_STRESSLOG_MULTIPLY);
@@ -1630,7 +1630,7 @@ bool GCToEEInterface::CreateThread(void (*threadStart)(void*), void* arg, bool i
         // we're not obligated to provide a name - if it's not valid,
         // just report nullptr as the name.
     }
-    EX_END_CATCH
+    EX_END_CATCH(SwallowAllExceptions)
 
     LIMITED_METHOD_CONTRACT;
     if (is_suspendable)
@@ -1675,7 +1675,7 @@ uint32_t GCToEEInterface::GetTotalNumSizedRefHandles()
 {
     LIMITED_METHOD_CONTRACT;
 
-    return 0;
+    return SystemDomain::System()->GetTotalNumSizedRefHandles();
 }
 
 NormalizedTimer analysisTimer;
@@ -1759,7 +1759,6 @@ void GCToEEInterface::AnalyzeSurvivorsFinished(size_t gcIndex, int condemnedGene
         {
             if (gcGenAnalysisTrace)
             {
-#ifdef FEATURE_PERFTRACING
                 EventPipeAdapter::ResumeSession(gcGenAnalysisEventPipeSession);
                 FireEtwGenAwareBegin((int)gcIndex, GetClrInstanceId());
                 s_forcedGCInProgress = true;
@@ -1768,7 +1767,6 @@ void GCToEEInterface::AnalyzeSurvivorsFinished(size_t gcIndex, int condemnedGene
                 reportGenerationBounds();
                 FireEtwGenAwareEnd((int)gcIndex, GetClrInstanceId());
                 EventPipeAdapter::PauseSession(gcGenAnalysisEventPipeSession);
-#endif //FEATURE_PERFTRACING
             }
             if (gcGenAnalysisDump)
             {
@@ -1779,7 +1777,7 @@ void GCToEEInterface::AnalyzeSurvivorsFinished(size_t gcIndex, int condemnedGene
                     GenerateDump (outputPath, 2, GenerateDumpFlagsNone, nullptr, 0);
                 }
                 EX_CATCH {}
-                EX_END_CATCH
+                EX_END_CATCH(SwallowAllExceptions);
             }
             gcGenAnalysisState = GcGenAnalysisState::Done;
             EnableFinalization(true);
@@ -1862,9 +1860,4 @@ void GCToEEInterface::DiagAddNewRegion(int generation, uint8_t* rangeStart, uint
 void GCToEEInterface::LogErrorToHost(const char *message)
 {
     ::LogErrorToHost("GC: %s", message);
-}
-
-uint64_t GCToEEInterface::GetThreadOSThreadId(Thread* thread)
-{
-    return thread->GetOSThreadId64();
 }

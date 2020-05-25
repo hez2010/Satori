@@ -1,11 +1,9 @@
 set(GC_DIR ../../gc)
-set(RUNTIME_DIR ../../runtime)
 
 set(COMMON_RUNTIME_SOURCES
     allocheap.cpp
     rhassert.cpp
-    ${RUNTIME_DIR}/CachedInterfaceDispatch.cpp
-    CachedInterfaceDispatch_Aot.cpp
+    CachedInterfaceDispatch.cpp
     Crst.cpp
     DebugHeader.cpp
     MethodTable.cpp
@@ -20,7 +18,6 @@ set(COMMON_RUNTIME_SOURCES
     gcenv.ee.cpp
     GcStressControl.cpp
     HandleTableHelpers.cpp
-    interoplibinterface_java.cpp
     MathHelpers.cpp
     MiscHelpers.cpp
     TypeManager.cpp
@@ -39,13 +36,13 @@ set(COMMON_RUNTIME_SOURCES
     yieldprocessornormalized.cpp
 
     ${GC_DIR}/gceventstatus.cpp
-    ${GC_DIR}/gcbridge.cpp
     ${GC_DIR}/gcload.cpp
     ${GC_DIR}/gcconfig.cpp
     ${GC_DIR}/gchandletable.cpp
     ${GC_DIR}/gccommon.cpp
-    ${GC_DIR}/gceewks.cpp
-    ${GC_DIR}/gcwks.cpp
+# TODO: VS Satori
+#    ${GC_DIR}/gceewks.cpp
+#    ${GC_DIR}/gcwks.cpp
     ${GC_DIR}/gcscan.cpp
     ${GC_DIR}/handletable.cpp
     ${GC_DIR}/handletablecache.cpp
@@ -53,12 +50,31 @@ set(COMMON_RUNTIME_SOURCES
     ${GC_DIR}/handletablescan.cpp
     ${GC_DIR}/objecthandle.cpp
     ${GC_DIR}/softwarewritewatch.cpp
-    ${CLR_SRC_NATIVE_DIR}/minipal/xoshiro128pp.c
+
+    ${CLR_SRC_NATIVE_DIR}/minipal/cpufeatures.c
+    ${CLR_SRC_NATIVE_DIR}/minipal/time.c
+    ${GC_DIR}/satori/SatoriGC.cpp
+    ${GC_DIR}/satori/SatoriHandlePartitioner.cpp
+    ${GC_DIR}/satori/SatoriHeap.cpp
+    ${GC_DIR}/satori/SatoriPage.cpp
+    ${GC_DIR}/satori/SatoriObject.cpp
+    ${GC_DIR}/satori/SatoriRegion.cpp
+    ${GC_DIR}/satori/SatoriRegionQueue.cpp
+    ${GC_DIR}/satori/SatoriAllocator.cpp
+    ${GC_DIR}/satori/SatoriRecycler.cpp
+    ${GC_DIR}/satori/SatoriTrimmer.cpp
+    ${GC_DIR}/satori/SatoriFinalizationQueue.cpp
+    ${GC_DIR}/satori/SatoriAllocationContext.cpp
+    ${GC_DIR}/satori/SatoriUtil.cpp
+    ${GC_DIR}/satori/SatoriLock.cpp
+    ${GC_DIR}/satori/SatoriWorkList.cpp
+    ${GC_DIR}/satori/SatoriGate.cpp
 )
 
 set(SERVER_GC_SOURCES
-    ${GC_DIR}/gceesvr.cpp
-    ${GC_DIR}/gcsvr.cpp
+# TODO: VS Satori
+#    ${GC_DIR}/gceesvr.cpp
+#    ${GC_DIR}/gcsvr.cpp
 )
 
 set(STANDALONEGC_DISABLED_SOURCES
@@ -80,7 +96,6 @@ include_directories(.)
 include_directories(${GC_DIR})
 include_directories(${GC_DIR}/env)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/eventpipe/inc)
-include_directories(${RUNTIME_DIR})
 
 if (WIN32)
   set(GC_HEADERS
@@ -117,13 +132,33 @@ if (WIN32)
     ${GC_DIR}/handletable.inl
     ${GC_DIR}/handletablepriv.h
     ${GC_DIR}/objecthandle.h
-    ${GC_DIR}/softwarewritewatch.h)
+    ${GC_DIR}/softwarewritewatch.h
+    ${GC_DIR}/satori/SatoriGC.h
+    ${GC_DIR}/satori/SatoriHeap.h
+    ${GC_DIR}/satori/SatoriPage.h
+    ${GC_DIR}/satori/SatoriRegion.h
+    ${GC_DIR}/satori/SatoriRegion.inl
+    ${GC_DIR}/satori/SatoriObject.h
+    ${GC_DIR}/satori/SatoriObject.inl
+    ${GC_DIR}/satori/SatoriQueue.h
+    ${GC_DIR}/satori/SatoriRegionQueue.h
+    ${GC_DIR}/satori/SatoriAllocator.h
+    ${GC_DIR}/satori/SatoriRecycler.h
+    ${GC_DIR}/satori/SatoriTrimmer.h
+    ${GC_DIR}/satori/SatoriFinalizationQueue.h
+    ${GC_DIR}/satori/SatoriWorkChunk.h
+    ${GC_DIR}/satori/SatoriWorkList.h
+    ${GC_DIR}/satori/SatoriAllocationContext.h
+    ${GC_DIR}/satori/SatoriUtil.h
+    ${GC_DIR}/satori/SatoriLock.h
+    ${GC_DIR}/satori/SatoriGate.h
+)
 
   include_directories(windows)
 
   list(APPEND COMMON_RUNTIME_SOURCES
-    windows/PalCommon.cpp
-    windows/PalMinWin.cpp
+    windows/PalRedhawkCommon.cpp
+    windows/PalRedhawkMinWin.cpp
     ${GC_DIR}/windows/gcenv.windows.cpp
   )
 
@@ -157,7 +192,7 @@ else()
   endif()
 
   list(APPEND COMMON_RUNTIME_SOURCES
-    unix/PalUnix.cpp
+    unix/PalRedhawkUnix.cpp
     unix/PalCreateDump.cpp
     ${GC_DIR}/unix/gcenv.unix.cpp
     ${GC_DIR}/unix/numasupport.cpp
@@ -168,7 +203,7 @@ else()
   list(APPEND FULL_RUNTIME_SOURCES
     unix/cgroupcpu.cpp
     unix/HardwareExceptions.cpp
-    unix/NativeContext.cpp
+    unix/UnixContext.cpp
     unix/UnixSignals.cpp
     unix/UnwindHelpers.cpp
     unix/UnixNativeCodeManager.cpp
@@ -207,22 +242,16 @@ if (CLR_CMAKE_TARGET_ARCH_AMD64)
 endif (CLR_CMAKE_TARGET_ARCH_AMD64)
 
 list(APPEND RUNTIME_SOURCES_ARCH_ASM
-  ${RUNTIME_DIR}/${ARCH_SOURCES_DIR}/AllocFast.${ASM_SUFFIX}
+  ${ARCH_SOURCES_DIR}/AllocFast.${ASM_SUFFIX}
   ${ARCH_SOURCES_DIR}/ExceptionHandling.${ASM_SUFFIX}
   ${ARCH_SOURCES_DIR}/GcProbe.${ASM_SUFFIX}
   ${ARCH_SOURCES_DIR}/MiscStubs.${ASM_SUFFIX}
   ${ARCH_SOURCES_DIR}/PInvoke.${ASM_SUFFIX}
   ${ARCH_SOURCES_DIR}/InteropThunksHelpers.${ASM_SUFFIX}
-  ${RUNTIME_DIR}/${ARCH_SOURCES_DIR}/StubDispatch.${ASM_SUFFIX}
+  ${ARCH_SOURCES_DIR}/StubDispatch.${ASM_SUFFIX}
   ${ARCH_SOURCES_DIR}/UniversalTransition.${ASM_SUFFIX}
-  ${RUNTIME_DIR}/${ARCH_SOURCES_DIR}/WriteBarriers.${ASM_SUFFIX}
+  ${ARCH_SOURCES_DIR}/WriteBarriers.${ASM_SUFFIX}
 )
-
-if (CLR_CMAKE_TARGET_ARCH_AMD64 OR CLR_CMAKE_TARGET_ARCH_ARM64)
-  list(APPEND RUNTIME_SOURCES_ARCH_ASM
-    ${ARCH_SOURCES_DIR}/CachedInterfaceDispatchAot.${ASM_SUFFIX}
-  )
-endif ()
 
 # Add architecture specific folder for looking up headers.
 convert_to_absolute_path(ARCH_SOURCES_DIR ${ARCH_SOURCES_DIR})
@@ -245,9 +274,11 @@ if (NOT CLR_CMAKE_TARGET_ARCH_WASM)
   add_definitions(-DFEATURE_HIJACK)
 endif()
 
+add_definitions(-DFEATURE_SATORI_GC)
+add_definitions(-DFEATURE_SATORI_EXTERNAL_OBJECTS)
 add_definitions(-DFEATURE_BASICFREEZE)
 add_definitions(-DFEATURE_CONSERVATIVE_GC)
-if(CLR_CMAKE_TARGET_ARCH_AMD64 OR CLR_CMAKE_TARGET_ARCH_ARM64 OR CLR_CMAKE_TARGET_ARCH_RISCV64 OR CLR_CMAKE_TARGET_ARCH_LOONGARCH64)
+if(CLR_CMAKE_TARGET_ARCH_AMD64 OR CLR_CMAKE_TARGET_ARCH_ARM64)
   add_definitions(-DFEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP)
   add_definitions(-DFEATURE_MANUALLY_MANAGED_CARD_BUNDLES)
 endif()
@@ -285,6 +316,7 @@ else()
     add_definitions(-DFEATURE_READONLY_GS_COOKIE)
   endif()
   include(unix/configure.cmake)
+  include(${CLR_SRC_NATIVE_DIR}/minipal/configure.cmake)
   include_directories(${CMAKE_CURRENT_BINARY_DIR})
 endif()
 
@@ -300,7 +332,7 @@ if (CLR_CMAKE_TARGET_UNIX)
 
 endif(CLR_CMAKE_TARGET_UNIX)
 
-set(NATIVEAOT_RUNTIME_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+set(RUNTIME_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
 list(APPEND COMMON_RUNTIME_SOURCES ${GC_HEADERS})
 
