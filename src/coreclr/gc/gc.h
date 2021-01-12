@@ -345,6 +345,16 @@ inline bool IsServerHeap()
 #endif // FEATURE_SVR_GC
 }
 
+inline bool IsSatoriHeap()
+{
+#ifdef FEATURE_SATORI_GC
+    assert(g_gc_heap_type != GC_HEAP_INVALID);
+    return g_gc_heap_type == GC_HEAP_SATORI;
+#else // FEATURE_SVR_GC
+    return false;
+#endif // FEATURE_SVR_GC
+}
+
 #ifndef MAX_LONGPATH
 #define MAX_LONGPATH 1024
 #endif // MAX_LONGPATH
