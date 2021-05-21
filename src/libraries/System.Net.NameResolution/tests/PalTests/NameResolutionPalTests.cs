@@ -58,7 +58,7 @@ namespace System.Net.NameResolution.PalTests
             _output.WriteLine("------");
         }
 
-        [Theory]
+        [Theory][OuterLoop("Satori: disabling for local runs")]
         [InlineData(false)]
         [InlineData(true)]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/107339", TestPlatforms.Wasi)]
@@ -75,7 +75,7 @@ namespace System.Net.NameResolution.PalTests
             Assert.True(addresses.Length > 0);
         }
 
-        [Theory]
+        [Theory][OuterLoop("Satori: disabling for local runs")]
         [InlineData(false)]
         [InlineData(true)]
         [ActiveIssue("https://github.com/dotnet/runtime/issues/107339", TestPlatforms.Wasi)]
@@ -99,7 +99,7 @@ namespace System.Net.NameResolution.PalTests
             Assert.True(addresses.Length > 0);
         }
 
-        [Theory]
+        [Theory][OuterLoop("Satori: disabling for local runs")]
         [InlineData(false)]
         [InlineData(true)]
         [OuterLoop("Uses external servers")]
@@ -126,7 +126,7 @@ namespace System.Net.NameResolution.PalTests
             Assert.True(addresses.Length > 0);
         }
 
-        [Theory]
+        [Theory][OuterLoop("Satori: disabling for local runs")]
         [InlineData(false)]
         [InlineData(true)]
         public void TryGetAddrInfo_ExternalHost(bool justAddresses)
@@ -140,7 +140,7 @@ namespace System.Net.NameResolution.PalTests
             Assert.True(addresses.Length > 0);
         }
 
-        [Theory]
+        [Theory][OuterLoop("Satori: disabling for local runs")]
         [InlineData(false)]
         [InlineData(true)]
         [OuterLoop("Uses external servers")]
@@ -164,6 +164,7 @@ namespace System.Net.NameResolution.PalTests
         }
 
         [ConditionalFact(nameof(Ipv6LocalHostNameLookupNotBrokenByNrpRule))]
+        [OuterLoop("Satori: disabling for local runs")]
         [SkipOnPlatform(TestPlatforms.Wasi, "WASI has no getnameinfo")]
         public void TryGetNameInfo_LocalHost_IPv6()
         {
@@ -180,6 +181,7 @@ namespace System.Net.NameResolution.PalTests
         }
 
         [Fact]
+        [OuterLoop("Satori: disabling for local runs")]
         [SkipOnPlatform(TestPlatforms.Wasi, "WASI has no getnameinfo")]
         public void TryGetAddrInfo_LocalHost_TryGetNameInfo()
         {
@@ -249,7 +251,7 @@ namespace System.Net.NameResolution.PalTests
             Assert.NotNull(name);
         }
 
-        [Theory]
+        [Theory][OuterLoop("Satori: disabling for local runs")]
         [InlineData(false)]
         [InlineData(true)]
         [SkipOnPlatform(TestPlatforms.Wasi, "WASI has no getnameinfo")]
@@ -265,7 +267,7 @@ namespace System.Net.NameResolution.PalTests
             Assert.NotNull(addresses);
         }
 
-        [ConditionalTheory(nameof(Ipv6LocalHostNameLookupNotBrokenByNrpRule))]
+        [Theory][OuterLoop("Satori: disabling for local runs")]
         [InlineData(false)]
         [InlineData(true)]
         [SkipOnPlatform(TestPlatforms.Wasi, "WASI has no getnameinfo")]
@@ -301,7 +303,7 @@ namespace System.Net.NameResolution.PalTests
 
 #pragma warning disable CS0162 // Unreachable code detected -- SupportsGetAddrInfoAsync is a constant on *nix.
 
-        [Theory]
+        [Theory][OuterLoop("Satori: disabling for local runs")]
         [InlineData(false)]
         [InlineData(true)]
         public async Task GetAddrInfoAsync_LocalHost(bool justAddresses)
@@ -327,7 +329,7 @@ namespace System.Net.NameResolution.PalTests
             }
         }
 
-        [Theory]
+        [Theory][OuterLoop("Satori: disabling for local runs")]
         [InlineData(false)]
         [InlineData(true)]
         [OuterLoop("Uses external servers")]
@@ -374,7 +376,7 @@ namespace System.Net.NameResolution.PalTests
             }
         }
 
-        [Theory]
+        [Theory][OuterLoop("Satori: disabling for local runs")]
         [InlineData(false)]
         [InlineData(true)]
         [OuterLoop("Uses external servers")]
@@ -424,7 +426,7 @@ namespace System.Net.NameResolution.PalTests
             }
         }
 
-        [Theory]
+        [Theory][OuterLoop("Satori: disabling for local runs")]
         [InlineData(false)]
         [InlineData(true)]
         public async Task GetAddrInfoAsync_ExternalHost(bool justAddresses)
@@ -457,7 +459,7 @@ namespace System.Net.NameResolution.PalTests
             }
         }
 
-        [Theory]
+        [Theory][OuterLoop("Satori: disabling for local runs")]
         [InlineData(false)]
         [InlineData(true)]
         [OuterLoop("Uses external servers")]
