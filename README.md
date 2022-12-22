@@ -1,5 +1,3 @@
-# .NET Runtime
-
 [![Build Status](https://dev.azure.com/dnceng-public/public/_apis/build/status/dotnet/runtime/runtime?branchName=main)](https://dev.azure.com/dnceng-public/public/_build/latest?definitionId=129&branchName=main)
 [![Help Wanted](https://img.shields.io/github/issues/dotnet/runtime/help%20wanted?style=flat-square&color=%232EA043&label=help%20wanted)](https://github.com/dotnet/runtime/labels/help%20wanted)
 [![Good First Issue](https://img.shields.io/github/issues/dotnet/runtime/good%20first%20issue?style=flat-square&color=%232EA043&label=good%20first%20issue)](https://github.com/dotnet/runtime/labels/good%20first%20issue)
@@ -71,3 +69,5 @@ General .NET OSS discussions: [.NET Foundation Discussions](https://github.com/d
 ## License
 
 .NET (including the runtime repo) is licensed under the [MIT](LICENSE.TXT) license.
+
+Once in a while I have an idea and I want to give it a try.
