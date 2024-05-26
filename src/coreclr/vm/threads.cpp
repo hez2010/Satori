@@ -3339,11 +3339,12 @@ retry:
             dwEnd = minipal_lowres_ticks();
             if (dwEnd - dwStart >= millis)
             {
-                ret = WAIT_TIMEOUT;
-                goto WaitCompleted;
+                millis = 0;
             }
-
-            millis -= (DWORD)(dwEnd - dwStart);
+            else
+            {
+                millis -= (DWORD)(dwEnd - dwStart);
+            }
             dwStart = dwEnd;
         }
         goto retry;
@@ -3567,8 +3568,7 @@ retry:
             dwEnd = minipal_lowres_ticks();
             if (dwStart + millis <= dwEnd)
             {
-                ret = WAIT_TIMEOUT;
-                goto WaitCompleted;
+                millis = 0;
             }
 
             millis -= (DWORD)(dwEnd - dwStart);
@@ -3603,8 +3603,6 @@ retry:
                 break;
         }
     }
-
-WaitCompleted:
 
     //Check that the return state is valid
     _ASSERTE(WAIT_OBJECT_0 == ret  ||
