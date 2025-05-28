@@ -252,7 +252,9 @@ public:
 
     static bool UseThreadAllocationContexts()
     {
-#if (defined(TARGET_X86) || defined(TARGET_AMD64)) && !defined(TARGET_UNIX)
+#ifdef FEATURE_SATORI_GC
+        return true;
+#elif (defined(TARGET_X86) || defined(TARGET_AMD64)) && !defined(TARGET_UNIX)
         return s_useThreadAllocationContexts;
 #else
         return true;
