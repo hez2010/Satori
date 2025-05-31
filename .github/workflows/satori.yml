@@ -1,0 +1,28 @@
+# This workflow will build a .NET project
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-net
+
+name: Satori
+
+on:
+  push:
+    branches: [ "build" ]
+
+jobs:
+  build:
+
+    runs-on: mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-amd64-musl
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: |
+        export ROOTFS_DIR=/crossrootfs/x64/
+        ./build.sh -s clr --cross -c Release
+    - name: Publish Artifacts
+      uses: actions/upload-artifact@v4.6.2
+      with: 
+        name: linux_musl_x64
+        path:  |
+          artifacts/bin/coreclr/linux.x64.Release/libcoreclr.so
+          artifacts/bin/coreclr/linux.x64.Release/libclrjit.so
+          artifacts/bin/coreclr/linux.x64.Release/System.Private.CoreLib.dll
