@@ -44,6 +44,6 @@ jobs:
       with: 
         name: linux_musl_arm64
         path:  |
-          artifacts/bin/coreclr/linux.x64.Release/libcoreclr.so
-          artifacts/bin/coreclr/linux.x64.Release/libclrjit.so
-          artifacts/bin/coreclr/linux.x64.Release/System.Private.CoreLib.dll
+          artifacts/bin/coreclr/linux.arm64.Release/libcoreclr.so
+          artifacts/bin/coreclr/linux.arm64.Release/libclrjit.so
+          artifacts/bin/coreclr/linux.arm64.Release/System.Private.CoreLib.dll
