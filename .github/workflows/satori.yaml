@@ -54,7 +54,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Build
-      run: build.cmd -s clr -c Release -arch x86
+      run: ./build.cmd -s clr -c Release -arch x86
     - name: Publish Artifacts
       uses: actions/upload-artifact@v4.6.2
       with: 
@@ -70,7 +70,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Build
-      run: build.cmd -s clr -c Release -arch x64
+      run: ./build.cmd -s clr -c Release -arch x64
     - name: Publish Artifacts
       uses: actions/upload-artifact@v4.6.2
       with: 
@@ -86,7 +86,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Build
-      run: build.cmd -s clr -c Release -arch arm64
+      run: ./build.cmd -s clr -c Release -arch arm64
     - name: Publish Artifacts
       uses: actions/upload-artifact@v4.6.2
       with: 
