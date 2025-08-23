@@ -48,22 +48,6 @@ jobs:
           artifacts/bin/coreclr/linux.arm64.Release/libclrjit.so
           artifacts/bin/coreclr/linux.arm64.Release/System.Private.CoreLib.dll
 
-  build_windows_x86:
-
-    runs-on: windows-2025
-    steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: ./build.cmd -s clr -c Release -arch x86
-    - name: Publish Artifacts
-      uses: actions/upload-artifact@v4.6.2
-      with: 
-        name: windows_x86
-        path:  |
-          artifacts/bin/coreclr/windows.x86.Release/coreclr.dll
-          artifacts/bin/coreclr/windows.x86.Release/clrjit.dll
-          artifacts/bin/coreclr/windows.x86.Release/System.Private.CoreLib.dll
-
   build_windows_x64:
 
     runs-on: windows-2025
