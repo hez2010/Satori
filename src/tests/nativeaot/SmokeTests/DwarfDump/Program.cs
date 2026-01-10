@@ -50,8 +50,18 @@ public class Program
         });
 
         // Just count the number of warnings and errors. There are so many right now that it's not worth enumerating the list
+<<<<<<< HEAD
         const int MinWarnings = 15;
         const int MaxWarnings = 150;
+=======
+#if DEBUG
+        const int MinWarnings = 1000;
+        const int MaxWarnings = 4000;
+#else
+        const int MinWarnings = 1000;
+        const int MaxWarnings = 5000;
+#endif
+>>>>>>> 4ad32842527 (Concurrent cleaning of cards dirtied by incremental marking. (#33))
         int count = 0;
         bool foundIlCpp = false;
         bool insideIlCpp = false;
