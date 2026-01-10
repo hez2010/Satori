@@ -3339,8 +3339,7 @@ retry:
             dwEnd = minipal_lowres_ticks();
             if (dwEnd - dwStart >= millis)
             {
-                ret = WAIT_TIMEOUT;
-                goto WaitCompleted;
+                millis = 0;
             }
 
             millis -= (DWORD)(dwEnd - dwStart);
@@ -3475,6 +3474,99 @@ WaitCompleted:
 }
 
 
+DWORD Thread::DoAppropriateWaitWorker(AppropriateWaitFunc func, void *args,
+                                      DWORD millis, WaitMode mode)
+{
+    CONTRACTL {
+        THROWS;
+        GC_TRIGGERS;
+    }
+    CONTRACTL_END;
+
+    BOOL alertable = (mode & WaitMode_Alertable)!=0;
+
+    // Before going to pre-emptive mode the thread needs to be flagged as waiting for
+    // the debugger. This used to be accomplished by the TS_Interruptible flag but that
+    // doesn't work reliably, see DevDiv Bugs 699245. Some methods call in here already in
+    // COOP mode so we set the bit before the transition. For the calls that are already
+    // in pre-emptive mode those are still buggy. This is only a partial fix.
+    BOOL isCoop = PreemptiveGCDisabled();
+    ThreadStateNCStackHolder tsNC(isCoop && alertable, TSNC_DebuggerSleepWaitJoin);
+    GCX_PREEMP();
+
+    // <TODO>
+    // @TODO cwb: we don't know whether a thread has a message pump or
+    // how to pump its messages, currently.
+    // @TODO cwb: WinCE isn't going to support Thread.Interrupt() correctly until
+    // we get alertable waits on that platform.</TODO>
+    DWORD ret;
+    if(alertable)
+    {
+        DoAppropriateWaitWorkerAlertableHelper(mode);
+    }
+
+    DWORD option;
+    if (alertable)
+    {
+        option = WAIT_ALERTABLE;
+#ifdef FEATURE_COMINTEROP_APARTMENT_SUPPORT
+        ApartmentState as = GetFinalApartment();
+        if ((AS_InMTA != as) && !AppDomain::GetCurrentDomain()->MustForceTrivialWaitOperations())
+        {
+            option |= WAIT_MSGPUMP;
+        }
+#endif  // FEATURE_COMINTEROP_APARTMENT_SUPPORT
+    }
+    else
+    {
+        option = 0;
+    }
+
+    ThreadStateHolder tsh(alertable, TS_Interruptible | TS_Interrupted);
+
+    ULONGLONG dwStart = 0;
+    ULONGLONG dwEnd;
+
+retry:
+    if (millis != INFINITE)
+    {
+        dwStart = CLRGetTickCount64();
+    }
+    ret = func(args, millis, option);
+
+    if (ret == WAIT_IO_COMPLETION)
+    {
+        _ASSERTE (alertable);
+
+        if ((m_State & TS_Interrupted))
+        {
+            HandleThreadInterrupt();
+        }
+        if (millis != INFINITE)
+        {
+            dwEnd = CLRGetTickCount64();
+            if (dwEnd >= dwStart + millis)
+            {
+                millis = 0;
+            }
+            else
+            {
+                millis -= (DWORD)(dwEnd - dwStart);
+            }
+        }
+        goto retry;
+    }
+
+    _ASSERTE(ret == WAIT_OBJECT_0 ||
+             ret == WAIT_ABANDONED ||
+             ret == WAIT_TIMEOUT ||
+             ret == WAIT_FAILED);
+
+    _ASSERTE((ret != WAIT_TIMEOUT) || (millis != INFINITE));
+
+    return ret;
+}
+
 //--------------------------------------------------------------------
 // Only one style of wait for DoSignalAndWait since we don't support this on STA Threads
 //--------------------------------------------------------------------
@@ -3567,8 +3659,7 @@ retry:
             dwEnd = minipal_lowres_ticks();
             if (dwStart + millis <= dwEnd)
             {
-                ret = WAIT_TIMEOUT;
-                goto WaitCompleted;
+                millis = 0;
             }
 
             millis -= (DWORD)(dwEnd - dwStart);
@@ -3603,8 +3694,6 @@ retry:
                 break;
         }
     }
-
-WaitCompleted:
 
     //Check that the return state is valid
     _ASSERTE(WAIT_OBJECT_0 == ret  ||

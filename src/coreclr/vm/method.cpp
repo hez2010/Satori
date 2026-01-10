@@ -1310,7 +1310,32 @@ ReturnKind MethodDesc::GetReturnKind()
 
     return RT_Scalar;
 }
-#endif // TARGET_X86 && HAVE_GCCOVER
+
+ReturnKind MethodDesc::GetReturnKind(INDEBUG(bool supportStringConstructors))
+{
+    // For simplicity, we don't hijack in funclets, but if you ever change that,
+    // be sure to choose the OnHijack... callback type to match that of the FUNCLET
+    // not the main method (it would probably be Scalar).
+
+    ENABLE_FORBID_GC_LOADER_USE_IN_THIS_SCOPE();
+    // Mark that we are performing a stackwalker like operation on the current thread.
+    // This is necessary to allow the signature parsing functions to work without triggering any loads
+    StackWalkerWalkingThreadHolder threadStackWalking(GetThreadNULLOk());
+
+#ifdef TARGET_X86
+    MetaSig msig(this);
+    if (msig.HasFPReturn())
+    {
+        // Figuring out whether the function returns FP or not is hard to do
+        // on-the-fly, so we use a different callback helper on x86 where this
+        // piece of information is needed in order to perform the right save &
+        // restore of the return value around the call to OnHijackScalarWorker.
+        return RT_Float;
+    }
+#endif // TARGET_X86
+
+    return ParseReturnKindFromSig(INDEBUG(supportStringConstructors));
+}
 
 #ifdef FEATURE_COMINTEROP
 
