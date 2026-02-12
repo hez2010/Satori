@@ -1429,6 +1429,11 @@ void SatoriRecycler::BlockingMark()
     DependentHandlesScan();
     ASSERT_NO_WORK();
 
+#ifdef FEATURE_JAVAMARSHAL
+    ProcessBridgeObjects();
+    ASSERT_NO_WORK();
+#endif
+
     // Tell EE we have done marking strong references before scanning finalizables.
     // What actually happens here is detaching COM wrappers when exposed object is not reachable.
     // The object may stay around for finalization and become F-reachable, so the check needs to happen here.
@@ -1468,6 +1473,34 @@ void SatoriRecycler::DependentHandlesScan()
     DependentHandlesInitialScan();
     MarkNewReachable();
 }
+
+#ifdef FEATURE_JAVAMARSHAL
+void SatoriRecycler::ProcessBridgeObjects()
+{
+    ScanContext sc = {};
+    sc.promotion = TRUE;
+    sc.thread_number = SatoriHandlePartitioner::CurrentThreadPartition();
+    sc.thread_count = SatoriHandlePartitioner::PartitionCount();
+
+    MarkContext c(this);
+    sc._unused1 = &c;
+
+    size_t numBridgeObjects = 0;
+    uint8_t** bridgeObjectsToPromote = GCScan::GcProcessBridgeObjects(m_condemnedGeneration, 2, &sc, &numBridgeObjects);
+    for (size_t i = 0; i < numBridgeObjects; i++)
+    {
+        PTR_Object bridgeObject = (PTR_Object)bridgeObjectsToPromote[i];
+        MarkFn</*isConservative*/ false>(&bridgeObject, &sc, 0);
+    }
+
+    if (c.m_WorkChunk != nullptr)
+    {
+        m_workList->Push(c.m_WorkChunk);
+    }
+
+    MarkNewReachable();
+}
+#endif // FEATURE_JAVAMARSHAL
 
 void SatoriRecycler::MarkStrongReferences()
 {

@@ -313,6 +313,11 @@ private:
     bool CleanCardsConcurrent(int64_t deadline);
     void CleanCards();
     bool MarkHandles(int64_t deadline = 0);
+
+#ifdef FEATURE_JAVAMARSHAL
+    void ProcessBridgeObjects();
+#endif
+
     void ShortWeakPtrScan();
     void ShortWeakPtrScanWorker();
     void LongWeakPtrScan();

@@ -549,12 +549,88 @@ Object* SatoriGC::GetContainingObject(void* pInteriorPtr, bool fCollectedGenOnly
 
 void SatoriGC::DiagWalkObject(Object* obj, walk_fn fn, void* context)
 {
-    // NYI
+    if (obj == nullptr)
+    {
+        return;
+    }
+
+    // gcbridge uses low MT bits as temporary metadata (BRIDGE_MARKED_BIT == 2).
+    // Clear it while enumerating refs through SatoriObject helpers, then restore it.
+    size_t* objectWords = (size_t*)obj;
+    const size_t bridgeMarkedBit = 2;
+    bool hadBridgeMark = (objectWords[0] & bridgeMarkedBit) != 0;
+    if (hadBridgeMark)
+    {
+        objectWords[0] &= ~bridgeMarkedBit;
+    }
+
+    SatoriObject* so = (SatoriObject*)obj;
+    if (!so->IsFree())
+    {
+        bool keepWalking = true;
+        so->ForEachObjectRef(
+            [&](SatoriObject** ref)
+            {
+                if (!keepWalking)
+                {
+                    return;
+                }
+
+                SatoriObject* child = VolatileLoadWithoutBarrier(ref);
+                if (child != nullptr)
+                {
+                    keepWalking = fn((Object*)child, context);
+                }
+            }
+        );
+    }
+
+    if (hadBridgeMark)
+    {
+        objectWords[0] |= bridgeMarkedBit;
+    }
 }
 
 void SatoriGC::DiagWalkObject2(Object* obj, walk_fn2 fn, void* context)
 {
-    // NYI
+    if (obj == nullptr)
+    {
+        return;
+    }
+
+    size_t* objectWords = (size_t*)obj;
+    const size_t bridgeMarkedBit = 2;
+    bool hadBridgeMark = (objectWords[0] & bridgeMarkedBit) != 0;
+    if (hadBridgeMark)
+    {
+        objectWords[0] &= ~bridgeMarkedBit;
+    }
+
+    SatoriObject* so = (SatoriObject*)obj;
+    if (!so->IsFree())
+    {
+        bool keepWalking = true;
+        so->ForEachObjectRef(
+            [&](SatoriObject** ref)
+            {
+                if (!keepWalking)
+                {
+                    return;
+                }
+
+                SatoriObject* child = VolatileLoadWithoutBarrier(ref);
+                if (child != nullptr)
+                {
+                    keepWalking = fn(obj, (uint8_t**)ref, context);
+                }
+            }
+        );
+    }
+
+    if (hadBridgeMark)
+    {
+        objectWords[0] |= bridgeMarkedBit;
+    }
 }
 
 void SatoriGC::DiagWalkHeap(walk_fn fn, void* context, int gen_number, bool walk_large_object_heap_p)
