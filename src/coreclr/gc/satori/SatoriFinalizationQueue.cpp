@@ -212,6 +212,18 @@ bool SatoriFinalizationQueue::TryScheduleForFinalization(SatoriObject* finalizab
 
         if (diff == 0)
         {
+            size_t deq = VolatileLoadWithoutBarrier(&m_dequeue);
+            if (enq < deq)
+            {
+                enq = m_enqueue;
+                continue;
+            }
+
+            if (enq - deq >= m_sizeMask)
+            {
+                return false;
+            }
+
             if (Interlocked::CompareExchange(&m_enqueue, enq + 1, enq) == enq)
             {
                 break;
@@ -247,7 +259,7 @@ bool SatoriFinalizationQueue::TryReserveSpace(size_t count, size_t* index)
     do
     {
         enq = m_enqueue;
-        if (enq + count - deq >= mask)
+        if (enq + count - deq > mask)
             return false; // overflow
     }
     while (Interlocked::CompareExchange(&m_enqueue, enq + count, enq) != enq);
