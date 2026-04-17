@@ -1184,6 +1184,10 @@ void SatoriRecycler::BlockingCollect1()
     m_gcAccmulatingDurationUsecs[1] += blockingDuration / m_perfCounterTicksPerMicro;
 
     size_t fromStartMillis = GetNowMillis() - m_startMillis;
+    if (fromStartMillis == 0)
+    {
+        fromStartMillis = 1;
+    }
     m_CurrentGcInfo->m_pausePercentage = (uint32_t)(m_gcAccmulatingDurationUsecs[1] / (int64_t)fromStartMillis / 10);
 
     m_CurrentGcInfo = nullptr;
@@ -1209,6 +1213,10 @@ void SatoriRecycler::BlockingCollect2()
     m_gcAccmulatingDurationUsecs[2] += blockingDuration / m_perfCounterTicksPerMicro;
 
     size_t fromStartMillis = GetNowMillis() - m_startMillis;
+    if (fromStartMillis == 0)
+    {
+        fromStartMillis = 1;
+    }
     m_CurrentGcInfo->m_pausePercentage = (uint32_t)( m_gcAccmulatingDurationUsecs[2] / (int64_t)fromStartMillis / 10);
 
     m_CurrentGcInfo = nullptr;
