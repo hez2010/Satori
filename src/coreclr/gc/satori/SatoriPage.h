@@ -70,13 +70,21 @@ public:
             m_cardTable[cardByteOffset] = Satori::CardState::REMEMBERED;
 
             size_t cardGroup = offset / Satori::BYTES_PER_CARD_GROUP;
+            bool resetPageTicket = false;
             if (!m_cardGroups[cardGroup * 2])
             {
                 m_cardGroups[cardGroup * 2] = Satori::CardState::REMEMBERED;
+                this->m_cardGroups[cardGroup * 2 + 1] = 0;
+                resetPageTicket = true;
                 if (!m_cardState)
                 {
                     m_cardState = Satori::CardState::REMEMBERED;
                 }
+            }
+
+            if (resetPageTicket)
+            {
+                m_scanTicket = 0;
             }
         }
     }
@@ -103,6 +111,27 @@ public:
         size_t cardGroup = offset / Satori::BYTES_PER_CARD_GROUP;
         if (m_cardGroups[cardGroup * 2] != Satori::CardState::DIRTY)
         {
+            bool resetTickets = false;
+            if (m_cardGroups[cardGroup * 2] == Satori::CardState::BLANK)
+            {
+                this->m_cardGroups[cardGroup * 2 + 1] = 0;
+                m_scanTicket = 0;
+                resetTickets = true;
+            }
+            if (m_cardState != Satori::CardState::DIRTY)
+            {
+                if (m_cardState == Satori::CardState::BLANK)
+                {
+                    m_scanTicket = 0;
+                    resetTickets = true;
+                }
+            }
+
+            if (resetTickets)
+            {
+                VolatileStoreBarrier();
+            }
+
             m_cardGroups[cardGroup * 2] = Satori::CardState::DIRTY;
             if (m_cardState != Satori::CardState::DIRTY)
             {

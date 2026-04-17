@@ -214,17 +214,25 @@ void SatoriPage::SetCardsForRange(size_t start, size_t end)
 
     size_t firstGroup = firstByteOffset / Satori::BYTES_PER_CARD_GROUP;
     size_t lastGroup = lastByteOffset / Satori::BYTES_PER_CARD_GROUP;
+    bool resetPageTicket = false;
     for (size_t i = firstGroup; i <= lastGroup; i++)
     {
         if (!m_cardGroups[i * 2])
         {
             m_cardGroups[i * 2] = Satori::CardState::REMEMBERED;
+            this->m_cardGroups[i * 2 + 1] = 0;
+            resetPageTicket = true;
         }
     }
 
     if (!m_cardState)
     {
         m_cardState = Satori::CardState::REMEMBERED;
+    }
+
+    if (resetPageTicket)
+    {
+        m_scanTicket = 0;
     }
 }
 
@@ -243,7 +251,16 @@ void SatoriPage::DirtyCardForAddress(size_t address)
     m_cardTable[cardByteOffset] = Satori::CardState::DIRTY;
 
     size_t cardGroup = offset / Satori::BYTES_PER_CARD_GROUP;
+    if (this->m_cardGroups[cardGroup * 2] == Satori::CardState::BLANK)
+    {
+        this->m_cardGroups[cardGroup * 2 + 1] = 0;
+        m_scanTicket = 0;
+    }
     VolatileStore(&this->m_cardGroups[cardGroup * 2], Satori::CardState::DIRTY);
+    if (m_cardState == Satori::CardState::BLANK)
+    {
+        m_scanTicket = 0;
+    }
     VolatileStore(&this->m_cardState, Satori::CardState::DIRTY);
 }
 
@@ -271,11 +288,21 @@ void SatoriPage::DirtyCardsForRange(size_t start, size_t end)
 
     size_t firstGroup = firstByteOffset / Satori::BYTES_PER_CARD_GROUP;
     size_t lastGroup = lastByteOffset / Satori::BYTES_PER_CARD_GROUP;
+    bool resetPageTicket = false;
     for (size_t i = firstGroup; i <= lastGroup; i++)
     {
+        if (this->m_cardGroups[i * 2] == Satori::CardState::BLANK)
+        {
+            this->m_cardGroups[i * 2 + 1] = 0;
+            resetPageTicket = true;
+        }
         this->m_cardGroups[i * 2] = Satori::CardState::DIRTY;
     }
 
+    if (m_cardState == Satori::CardState::BLANK || resetPageTicket)
+    {
+        m_scanTicket = 0;
+    }
     VolatileStore(&this->m_cardState, Satori::CardState::DIRTY);
 }
 
@@ -303,6 +330,34 @@ void SatoriPage::DirtyCardsForRangeConcurrent(size_t start, size_t end)
     // only the eventual final state matters
     size_t firstGroup = firstByteOffset / Satori::BYTES_PER_CARD_GROUP;
     size_t lastGroup = lastByteOffset / Satori::BYTES_PER_CARD_GROUP;
+    bool resetTickets = false;
+    for (size_t i = firstGroup; i <= lastGroup; i++)
+    {
+        if (m_cardGroups[i * 2] != Satori::CardState::DIRTY)
+        {
+            if (m_cardGroups[i * 2] == Satori::CardState::BLANK)
+            {
+                this->m_cardGroups[i * 2 + 1] = 0;
+                m_scanTicket = 0;
+                resetTickets = true;
+            }
+        }
+    }
+
+    if (m_cardState != Satori::CardState::DIRTY)
+    {
+        if (m_cardState == Satori::CardState::BLANK)
+        {
+            m_scanTicket = 0;
+            resetTickets = true;
+        }
+    }
+
+    if (resetTickets)
+    {
+        VolatileStoreBarrier();
+    }
+
     for (size_t i = firstGroup; i <= lastGroup; i++)
     {
         if (m_cardGroups[i * 2] != Satori::CardState::DIRTY)
