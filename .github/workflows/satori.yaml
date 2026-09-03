@@ -1,0 +1,121 @@
+# This workflow will build a .NET project
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-net
+
+name: Satori
+
+on:
+  push:
+    branches: [ "*" ]
+
+jobs:
+  build_linux_musl_x64:
+
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-amd64-musl
+      env:
+        ROOTFS_DIR: /crossrootfs/x64/
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: ./build.sh -s clr --cross -c Release -arch x64
+    - name: Publish Artifacts
+      uses: actions/upload-artifact@v4.6.2
+      with: 
+        name: linux_musl_x64
+        path:  |
+          artifacts/bin/coreclr/linux.x64.Release/libcoreclr.so
+          artifacts/bin/coreclr/linux.x64.Release/libclrjit.so
+          artifacts/bin/coreclr/linux.x64.Release/System.Private.CoreLib.dll
+
+  build_linux_musl_arm64:
+
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-arm64-musl
+      env:
+        ROOTFS_DIR: /crossrootfs/arm64/
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: ./build.sh -s clr --cross -c Release -arch arm64
+    - name: Publish Artifacts
+      uses: actions/upload-artifact@v4.6.2
+      with: 
+        name: linux_musl_arm64
+        path:  |
+          artifacts/bin/coreclr/linux.arm64.Release/libcoreclr.so
+          artifacts/bin/coreclr/linux.arm64.Release/libclrjit.so
+          artifacts/bin/coreclr/linux.arm64.Release/System.Private.CoreLib.dll
+
+  build_linux_x64:
+
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-amd64
+      env:
+        ROOTFS_DIR: /crossrootfs/x64/
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: ./build.sh -s clr --cross -c Release -arch x64
+    - name: Publish Artifacts
+      uses: actions/upload-artifact@v4.6.2
+      with: 
+        name: linux_x64
+        path:  |
+          artifacts/bin/coreclr/linux.x64.Release/libcoreclr.so
+          artifacts/bin/coreclr/linux.x64.Release/libclrjit.so
+          artifacts/bin/coreclr/linux.x64.Release/System.Private.CoreLib.dll
+
+  build_linux_arm64:
+
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-arm64
+      env:
+        ROOTFS_DIR: /crossrootfs/arm64/
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: ./build.sh -s clr --cross -c Release -arch arm64
+    - name: Publish Artifacts
+      uses: actions/upload-artifact@v4.6.2
+      with: 
+        name: linux_arm64
+        path:  |
+          artifacts/bin/coreclr/linux.arm64.Release/libcoreclr.so
+          artifacts/bin/coreclr/linux.arm64.Release/libclrjit.so
+          artifacts/bin/coreclr/linux.arm64.Release/System.Private.CoreLib.dll
+
+  build_windows_x64:
+
+    runs-on: windows-2025
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: ./build.cmd -s clr -c Release -arch x64
+    - name: Publish Artifacts
+      uses: actions/upload-artifact@v4.6.2
+      with: 
+        name: windows_x64
+        path:  |
+          artifacts/bin/coreclr/windows.x64.Release/coreclr.dll
+          artifacts/bin/coreclr/windows.x64.Release/clrjit.dll
+          artifacts/bin/coreclr/windows.x64.Release/System.Private.CoreLib.dll
+
+  build_windows_arm64:
+
+    runs-on: windows-2025
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build
+      run: ./build.cmd -s clr -c Release -arch arm64
+    - name: Publish Artifacts
+      uses: actions/upload-artifact@v4.6.2
+      with: 
+        name: windows_arm64
+        path:  |
+          artifacts/bin/coreclr/windows.arm64.Release/coreclr.dll
+          artifacts/bin/coreclr/windows.arm64.Release/clrjit.dll
+          artifacts/bin/coreclr/windows.arm64.Release/System.Private.CoreLib.dll
