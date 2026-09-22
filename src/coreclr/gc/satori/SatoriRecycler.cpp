@@ -359,7 +359,7 @@ void SatoriRecycler::PushToTenuredQueues(SatoriRegion* region)
     size_t estimatedReclaim = region->ReclaimSizeIfRelocated(m_nextGcIsFullGc);
     if (estimatedReclaim  > 0)
     {
-        Interlocked::ExchangeAdd64(&m_estimatedEphemeralReclaim, estimatedReclaim);
+        Interlocked::ExchangeAdd64(&m_estimatedTenuredReclaim, estimatedReclaim);
     }
 
     if (region->HasFinalizables())
@@ -951,7 +951,7 @@ int SatoriRecycler::MaxWorkers()
     int workerCount = SatoriUtil::MaxWorkersCount();
     if (workerCount < 0)
     {
-        int cpuCount = GCToOSInterface::GetTotalProcessorCount();
+        int cpuCount = GCToEEInterface::GetCurrentProcessCpuCount();
 
         // TUNING: should this be more dynamic? check CPU load and such.
         workerCount = cpuCount - 1;
@@ -1080,18 +1080,33 @@ void SatoriRecycler::MaybeTriggerGC(gc_reason reason)
 
 size_t GetAvailableMemory()
 {
+    bool isRestricted;
+    uint64_t total = GCToOSInterface::GetPhysicalMemoryLimit(&isRestricted);
     uint64_t available;
-    uint64_t total;
-    GCToOSInterface::GetMemoryStatus(0, nullptr, &available, &total);
+#ifdef TARGET_WINDOWS
+    uint64_t availableCommit;
+    GCToOSInterface::GetMemoryStatus(0, nullptr, &available, &availableCommit);
+#else
+    GCToOSInterface::GetMemoryStatus(0, nullptr, &available, nullptr);
+#endif
 
-    // we will not use the last 5% of physical memory
-    uint64_t reserve = total * 5 / 100;
-    if (available > reserve)
+    if (isRestricted)
     {
-        return available - reserve;
+        uint64_t restrictedAvailable;
+        GCToOSInterface::GetMemoryStatus(total, nullptr, &restrictedAvailable, nullptr);
+        available = min(available, restrictedAvailable);
     }
 
-    return 0;
+    // we will not use the last 5% of physical memory
+    uint64_t reserve = total / 20;
+    available = available > reserve ? available - reserve : 0;
+
+#ifdef TARGET_WINDOWS
+    // Windows reports commit headroom; Unix reports free swap, which is not a commit limit.
+    available = min(available, availableCommit);
+#endif
+
+    return (size_t)available;
 }
 
 void SatoriRecycler::AdjustHeuristics()
@@ -2109,14 +2124,26 @@ bool SatoriRecycler::DrainMarkQueuesConcurrent(SatoriWorkChunk* srcChunk, int64_
         {
             size_t start, end;
             srcChunk->GetRange(o, start, end);
-            srcChunk->Clear();
-            if (!dstChunk)
+            size_t chunkSize = o->Size() > Satori::REGION_SIZE_GRANULARITY ?
+                Satori::REGION_SIZE_GRANULARITY : Satori::MARK_RANGE_THRESHOLD;
+            if (end - start > chunkSize)
             {
-                dstChunk = srcChunk;
+                // Reuse the chunk for the remainder, which other workers can claim.
+                srcChunk->SetRange(o, start + chunkSize, end);
+                m_workList->Push(srcChunk);
+                end = start + chunkSize;
             }
             else
             {
-                m_heap->Allocator()->ReturnWorkChunk(srcChunk);
+                srcChunk->Clear();
+                if (!dstChunk)
+                {
+                    dstChunk = srcChunk;
+                }
+                else
+                {
+                    m_heap->Allocator()->ReturnWorkChunk(srcChunk);
+                }
             }
 
             srcChunk = nullptr;
@@ -2218,30 +2245,17 @@ void SatoriRecycler::ScheduleMarkAsChildRanges(SatoriObject* o)
     if (o->RawGetMethodTable()->ContainsGCPointersOrCollectible())
     {
         size_t start = o->Start();
-        size_t remains = o->Size();
-        size_t chunkSize = remains > Satori::REGION_SIZE_GRANULARITY ?
-            Satori::REGION_SIZE_GRANULARITY:
-            Satori::MARK_RANGE_THRESHOLD;
-
-            while (remains > 0)
+        size_t end = start + o->Size();
+        SatoriWorkChunk* chunk = m_heap->Allocator()->TryGetWorkChunk();
+        if (chunk == nullptr)
         {
-            SatoriWorkChunk* chunk = m_heap->Allocator()->TryGetWorkChunk();
-            if (chunk == nullptr)
-            {
-                o->ContainingRegion()->ContainingPage()->DirtyCardsForRange(start, start + remains);
-                remains = 0;
-                break;
-            }
-
-            size_t len = min(chunkSize, remains);
-            chunk->SetRange(o, start, start + len);
-            start += len;
-            remains -= len;
-            m_workList->Push(chunk);
+            o->ContainingRegion()->ContainingPage()->DirtyCardsForRange(start, end);
+            return;
         }
 
-        // done with current object
-        _ASSERTE(remains == 0);
+        // Consumers split off one range at a time without allocating more chunks.
+        chunk->SetRange(o, start, end);
+        m_workList->Push(chunk);
     }
 }
 
@@ -2310,14 +2324,26 @@ void SatoriRecycler::DrainMarkQueues(SatoriWorkChunk* srcChunk)
             SatoriObject* o;
             size_t start, end;
             srcChunk->GetRange(o, start, end);
-            srcChunk->Clear();
-            if (!dstChunk)
+            size_t chunkSize = o->Size() > Satori::REGION_SIZE_GRANULARITY ?
+                Satori::REGION_SIZE_GRANULARITY : Satori::MARK_RANGE_THRESHOLD;
+            if (end - start > chunkSize)
             {
-                dstChunk = srcChunk;
+                // Reuse the chunk for the remainder, which other workers can claim.
+                srcChunk->SetRange(o, start + chunkSize, end);
+                m_workList->Push(srcChunk);
+                end = start + chunkSize;
             }
             else
             {
-                m_heap->Allocator()->ReturnWorkChunk(srcChunk);
+                srcChunk->Clear();
+                if (!dstChunk)
+                {
+                    dstChunk = srcChunk;
+                }
+                else
+                {
+                    m_heap->Allocator()->ReturnWorkChunk(srcChunk);
+                }
             }
 
             srcChunk = nullptr;
@@ -3607,9 +3633,8 @@ void SatoriRecycler::Plan()
     }
 #endif
 
-    // these counters are since last blocking collection, clear them
+    // Gen1 allocations are accounted for by every blocking collection.
     m_gen1AddedSinceLastCollection = 0;
-    m_gen2AddedSinceLastCollection = 0;
 
     size_t estimatedReclaim = m_estimatedEphemeralReclaim;
     if (m_condemnedGeneration == 2)
@@ -3623,7 +3648,8 @@ void SatoriRecycler::Plan()
 
     if (m_promoteAllRegions)
     {
-        // we will be rebuilding gen2, one way or another
+        // Direct Gen2 allocations enter occupancy when Gen2 is rebuilt.
+        m_gen2AddedSinceLastCollection = 0;
         m_occupancyAcc[2] = 0;
         m_estimatedTenuredReclaim = 0;
         m_demotedOccupancyAcc = 0;
@@ -3952,11 +3978,19 @@ void SatoriRecycler::RelocateRegion(SatoriRegion* relocationSource)
         }
     }
 
-    // transfer finalization trackers if we have any
-    relocationTarget->TakeFinalizerInfoFrom(relocationSource);
-
     // allocate space for relocated objects
     size_t dst = relocationTarget->Allocate(maxBytesToCopy, /*zeroInitialize*/ false);
+    if (dst == 0)
+    {
+        // Restore the target's free span and keep the source intact for sweeping.
+        relocationTarget->StopAllocating();
+        AddRelocationTarget(relocationTarget);
+        AddRelocationTarget(relocationSource);
+        return;
+    }
+
+    // transfer finalization trackers only after the destination is secured
+    relocationTarget->TakeFinalizerInfoFrom(relocationSource);
 
     // actually relocate src objects into the allocated space.
     size_t dstOrig = dst;
@@ -4069,13 +4103,13 @@ void SatoriRecycler::Update()
     _ASSERTE(m_occupancyAcc[1] == 0);
     _ASSERTE(m_estimatedEphemeralReclaim == 0);
     _ASSERTE(m_gen1AddedSinceLastCollection == 0);
-    _ASSERTE(m_gen2AddedSinceLastCollection == 0);
 
     _ASSERTE(m_promoteAllRegions || m_condemnedGeneration != 2);
     if (m_promoteAllRegions)
     {
         _ASSERTE(m_tenuredRegions->IsEmpty());
         _ASSERTE(m_tenuredFinalizationTrackingRegions->IsEmpty());
+        _ASSERTE(m_gen2AddedSinceLastCollection == 0);
         _ASSERTE(m_occupancyAcc[2] == 0);
         _ASSERTE(m_demotedOccupancyAcc == 0);
         _ASSERTE(m_estimatedTenuredReclaim == 0);
