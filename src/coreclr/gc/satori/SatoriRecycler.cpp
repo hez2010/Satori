@@ -2428,7 +2428,6 @@ bool SatoriRecycler::ScheduleUpdateAsChildRanges(SatoriObject* o)
         }
 
         // Skip the method table; the remaining ranges must not overlap because
-        // updating a relocated pointer twice is unsafe.
         chunk->SetRange(o, o->Start() + sizeof(size_t), o->Start() + o->Size());
         m_workList->Push(chunk);
     }
