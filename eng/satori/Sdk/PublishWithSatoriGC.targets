@@ -1,0 +1,76 @@
+<Project>
+  <Target Name="_WarnSatoriGCExperimental" BeforeTargets="PrepareForPublish" Condition="'$(UseSatoriGC)' == 'true'">
+    <Warning Text="Satori GC is experimental." />
+  </Target>
+
+  <Target Name="_ResolveSatoriPaths" BeforeTargets="ResolveRuntimePackAssets;SetupProperties;_CreateSingleFileHost"
+          Condition="'$(UseSatoriGC)' == 'true' and '$(RuntimeIdentifier)' != '' and '$(IsCrossTargetingBuild)' != 'true'">
+    <ItemGroup>
+      <_SatoriSelectedRuntime Include="@(SatoriRuntimePack)" Condition="'%(SatoriRuntimePack.Identity)' == '$(RuntimeIdentifier)'" />
+      <_SatoriSelectedAotSdk Include="@(SatoriAotSdkPack)" Condition="'%(SatoriAotSdkPack.Identity)' == '$(RuntimeIdentifier)'" />
+      <_SatoriSelectedAotTools Include="@(SatoriAotToolsPack)" Condition="'%(SatoriAotToolsPack.Identity)' == '$(SatoriHostRuntimeIdentifier)'" />
+    </ItemGroup>
+    <PropertyGroup>
+      <SatoriRuntimePath>%(_SatoriSelectedRuntime.Root)</SatoriRuntimePath>
+      <SatoriAotToolsPath>%(_SatoriSelectedAotTools.Root)</SatoriAotToolsPath>
+      <IlcSdkPath Condition="'$(PublishAot)' == 'true'">%(_SatoriSelectedAotSdk.Root)</IlcSdkPath>
+      <IlcToolsPath Condition="'$(PublishAot)' == 'true'">$(SatoriAotToolsPath)</IlcToolsPath>
+      <SingleFileHostSourcePath Condition="'$(PublishAot)' != 'true' and '$(PublishSingleFile)' == 'true'">$(SatoriRuntimePath)corehost/singlefilehost$(_NativeExecutableExtension)</SingleFileHostSourcePath>
+    </PropertyGroup>
+    <Error Condition="'$(PublishAot)' == 'true' and ('$(IlcSdkPath)' == '' or '$(IlcToolsPath)' == '')"
+           Text="Restore the Satori AotSdk and host AotTools packs with the same RID and PublishAot settings used for publish." />
+    <Error Condition="'$(PublishAot)' != 'true' and '$(SatoriRuntimePath)' == ''"
+           Text="Restore the Satori Runtime pack with the same RID used for publish." />
+    <Error Condition="'$(PublishReadyToRun)' == 'true' and '$(SatoriAotToolsPath)' == ''"
+           Text="Restore the Satori host AotTools pack with PublishReadyToRun=true." />
+  </Target>
+
+  <Target Name="UseSatoriReadyToRunCompiler" AfterTargets="ResolveReadyToRunCompilers" DependsOnTargets="_ResolveSatoriPaths"
+          Condition="'$(UseSatoriGC)' == 'true' and '$(PublishReadyToRun)' == 'true' and '$(PublishReadyToRunUseCrossgen2)' == 'true'">
+    <ItemGroup>
+      <!-- Keep the SDK's host executable name and target OS/architecture metadata. -->
+      <_SatoriStockCrossgen2Tool Include="@(Crossgen2Tool)" />
+      <Crossgen2Tool Remove="@(_SatoriStockCrossgen2Tool)" />
+      <Crossgen2Tool Include="@(_SatoriStockCrossgen2Tool->'$(SatoriAotToolsPath)crossgen2-published/%(Filename)%(Extension)')" />
+    </ItemGroup>
+    <Exec Command="chmod u+x &quot;@(Crossgen2Tool)&quot;" Condition="'$(OS)' != 'Windows_NT'" />
+  </Target>
+
+  <Target Name="UseSatoriGC" AfterTargets="ResolveRuntimePackAssets" DependsOnTargets="_ResolveSatoriPaths"
+          Condition="'$(UseSatoriGC)' == 'true' and '$(PublishAot)' != 'true' and '$(RuntimeIdentifier)' != ''">
+    <ItemGroup>
+      <_SatoriStockRuntimeAsset Include="@(RuntimePackAsset)"
+          Condition="'%(RuntimePackAsset.NuGetPackageId)' == 'Microsoft.NETCore.App.Runtime.$(RuntimeIdentifier)' and
+                     ('%(RuntimePackAsset.Filename)%(RuntimePackAsset.Extension)' == '$(_NativeLibraryPrefix)coreclr$(_NativeLibraryExtension)' or
+                      '%(RuntimePackAsset.Filename)%(RuntimePackAsset.Extension)' == '$(_NativeLibraryPrefix)clrjit$(_NativeLibraryExtension)' or
+                      '%(RuntimePackAsset.Filename)%(RuntimePackAsset.Extension)' == 'System.Private.CoreLib.dll')" />
+      <!-- Transforms preserve the runtime-pack metadata used by publishing. -->
+      <_SatoriReplacementRuntimeAsset Include="@(_SatoriStockRuntimeAsset->'$(SatoriRuntimePath)%(Filename)%(Extension)')" />
+    </ItemGroup>
+    <Error Condition="'@(_SatoriStockRuntimeAsset)' == ''"
+           Text="Satori requires a self-contained CoreCLR publish or PublishAot=true. Mono packs cannot use this runtime override." />
+    <ItemGroup>
+      <RuntimePackAsset Remove="@(_SatoriStockRuntimeAsset)" />
+      <RuntimePackAsset Include="@(_SatoriReplacementRuntimeAsset)" />
+      <ReferenceCopyLocalPaths Remove="@(_SatoriStockRuntimeAsset)" />
+      <ReferenceCopyLocalPaths Include="@(_SatoriReplacementRuntimeAsset)"
+                               Condition="'$(CopyLocalLockFileAssemblies)' == 'true' and '$(SelfContained)' == 'true'" />
+    </ItemGroup>
+  </Target>
+
+  <!-- Mobile runtime packs also contribute stock private assemblies. ILC keeps
+       the first reference with a given name, so replace these after collection. -->
+  <Target Name="UseSatoriNativeAotAssemblies" AfterTargets="ComputeIlcCompileInputs" DependsOnTargets="_ResolveSatoriPaths"
+          Condition="'$(UseSatoriGC)' == 'true' and '$(PublishAot)' == 'true'">
+    <ItemGroup>
+      <_SatoriPrivateSdkAssembly Include="$(IlcSdkPath)*.dll" />
+      <IlcReference Remove="@(_SatoriPrivateSdkAssembly)" MatchOnMetadata="Filename" MatchOnMetadataOptions="CaseInsensitive" />
+      <IlcReference Include="@(_SatoriPrivateSdkAssembly)" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="_MakeSatoriCompilerExecutable" BeforeTargets="IlcCompile"
+          Condition="'$(UseSatoriGC)' == 'true' and '$(PublishAot)' == 'true' and '$(OS)' != 'Windows_NT'">
+    <Exec Command="chmod u+x &quot;$(IlcToolsPath)ilc&quot;" />
+  </Target>
+</Project>

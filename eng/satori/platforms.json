@@ -1,0 +1,20 @@
+{
+  "linux": [
+    {"rid": "linux-x64", "os": "linux", "arch": "x64", "tools": true, "artifact": "linux_x64", "container": "mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net11.0-cross-amd64@sha256:ca817af24ff68c801a3e31f16a0fbf6bb7ba57764b0aeae5be260dbc70ae25cb", "rootfs": "/crossrootfs/x64"},
+    {"rid": "linux-arm64", "os": "linux", "arch": "arm64", "tools": true, "artifact": "linux_arm64", "container": "mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net11.0-cross-arm64@sha256:3a37282ababd05805d2927807e42f1582e7812b43d85058ad7e6270334a231ee", "rootfs": "/crossrootfs/arm64"},
+    {"rid": "linux-musl-x64", "os": "linux", "arch": "x64", "tools": true, "artifact": "linux_musl_x64", "container": "mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net11.0-cross-amd64-musl@sha256:e605ffdc97dab3a45c748fd79b4b84d37dd5dbe3d74f47e601b85ee8f19f01d2", "rootfs": "/crossrootfs/x64"},
+    {"rid": "linux-musl-arm64", "os": "linux", "arch": "arm64", "tools": true, "artifact": "linux_musl_arm64", "container": "mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net11.0-cross-arm64-musl@sha256:b903935fcc8a3ec32aae033c692893901a1f96e2e5c8fa6d9f38a0d9d1878e60", "rootfs": "/crossrootfs/arm64"}
+  ],
+  "windows": [
+    {"rid": "win-x64", "os": "windows", "arch": "x64", "tools": true, "artifact": "windows_x64", "runner": "windows-2025"},
+    {"rid": "win-arm64", "os": "windows", "arch": "arm64", "tools": true, "artifact": "windows_arm64", "runner": "windows-11-arm"}
+  ],
+  "macos": [
+    {"rid": "osx-x64", "os": "osx", "arch": "x64", "tools": true, "artifact": "osx_x64", "runner": "macos-15-intel"},
+    {"rid": "osx-arm64", "os": "osx", "arch": "arm64", "tools": true, "artifact": "osx_arm64", "runner": "macos-15"}
+  ],
+  "android": [
+    {"rid": "android-x64", "os": "android", "arch": "x64", "tools": false},
+    {"rid": "android-arm64", "os": "android", "arch": "arm64", "tools": false}
+  ]
+}
