@@ -1,0 +1,190 @@
+name: Satori
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: "NuGet version (empty uses the product version plus run ID and attempt)"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: satori-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  SATORI_SUBSETS: clr.runtime+clr.jit+clr.alljits+clr.nativecorelib+clr.aot
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.matrix.outputs.version }}
+      linux: ${{ steps.matrix.outputs.linux }}
+      windows: ${{ steps.matrix.outputs.windows }}
+      macos: ${{ steps.matrix.outputs.macos }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate platform matrices and common package version
+        id: matrix
+        env:
+          REQUESTED_VERSION: ${{ inputs.package_version }}
+        run: ./eng/satori/package.ps1 -Action Prepare -Version $env:REQUESTED_VERSION -Output $env:GITHUB_OUTPUT
+      - name: Package entrypoint SDK
+        env:
+          PACKAGE_VERSION: ${{ steps.matrix.outputs.version }}
+        run: ./eng/satori/package.ps1 -Action Sdk -Version $env:PACKAGE_VERSION -Output artifacts/satori-nuget
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: satori-packages-sdk
+          path: artifacts/satori-nuget/*.nupkg
+          if-no-files-found: error
+
+  linux:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.linux) }}
+    env:
+      PACKAGE_VERSION: ${{ needs.prepare.outputs.version }}
+      TARGET_RID: ${{ matrix.rid }}
+      TARGET_ARCH: ${{ matrix.arch }}
+      PREREQS_IMAGE: ${{ matrix.container }}
+      ROOTFS_DIR: ${{ matrix.rootfs }}
+    steps:
+      - uses: actions/checkout@v4
+      # Run the native build in the repository's pinned cross-build image, while
+      # Orchestration and packaging use the runner's PowerShell.
+      - name: Build runtime, target AotSdk, host tools, and single-file host
+        run: |
+          $runnerUid = & id -u
+          $runnerGid = & id -g
+          & docker run --rm --user "${runnerUid}:${runnerGid}" --volume "${env:GITHUB_WORKSPACE}:/satori" --workdir /satori --env "ROOTFS_DIR=$env:ROOTFS_DIR" --env DOTNET_CLI_HOME=/tmp/satori-dotnet --env NUGET_PACKAGES=/satori/.packages $env:PREREQS_IMAGE ./build.sh -ci -s "$env:SATORI_SUBSETS+host.native" --cross -c Release -arch $env:TARGET_ARCH
+          if ($LASTEXITCODE -ne 0) { throw "Linux build failed for $env:TARGET_RID." }
+      - name: Upload desktop binaries
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            artifacts/bin/coreclr/linux.${{ matrix.arch }}.Release/libcoreclr.so
+            artifacts/bin/coreclr/linux.${{ matrix.arch }}.Release/libclrjit.so
+            artifacts/bin/coreclr/linux.${{ matrix.arch }}.Release/System.Private.CoreLib.dll
+            artifacts/bin/coreclr/linux.${{ matrix.arch }}.Release/aotsdk/
+            artifacts/bin/coreclr/linux.${{ matrix.arch }}.Release/ilc-published/
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Package target and host packs
+        run: ./eng/satori/package.ps1 -Action Pack -Rid $env:TARGET_RID -BuildRoot "artifacts/bin/coreclr/linux.$env:TARGET_ARCH.Release" -Version $env:PACKAGE_VERSION -Output artifacts/satori-nuget
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: satori-packages-${{ matrix.rid }}
+          path: artifacts/satori-nuget/PublishWithSatoriGC.*.${{ matrix.rid }}.*.nupkg
+          if-no-files-found: error
+
+  windows:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.windows) }}
+    env:
+      PACKAGE_VERSION: ${{ needs.prepare.outputs.version }}
+      TARGET_RID: ${{ matrix.rid }}
+      TARGET_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build runtime, target AotSdk, host tools, and single-file host
+        run: |
+          ./build.cmd -ci -s "$env:SATORI_SUBSETS+host.native" -c Release -arch $env:TARGET_ARCH
+          if ($LASTEXITCODE -ne 0) { throw "Windows build failed for $env:TARGET_RID." }
+      - name: Upload desktop binaries
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            artifacts/bin/coreclr/windows.${{ matrix.arch }}.Release/coreclr.dll
+            artifacts/bin/coreclr/windows.${{ matrix.arch }}.Release/clrjit.dll
+            artifacts/bin/coreclr/windows.${{ matrix.arch }}.Release/System.Private.CoreLib.dll
+            artifacts/bin/coreclr/windows.${{ matrix.arch }}.Release/aotsdk/
+            artifacts/bin/coreclr/windows.${{ matrix.arch }}.Release/ilc-published/
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Package target and host packs
+        run: ./eng/satori/package.ps1 -Action Pack -Rid $env:TARGET_RID -BuildRoot "artifacts/bin/coreclr/windows.$env:TARGET_ARCH.Release" -Version $env:PACKAGE_VERSION -Output artifacts/satori-nuget
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: satori-packages-${{ matrix.rid }}
+          path: artifacts/satori-nuget/PublishWithSatoriGC.*.${{ matrix.rid }}.*.nupkg
+          if-no-files-found: error
+
+  macos:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.macos) }}
+    env:
+      PACKAGE_VERSION: ${{ needs.prepare.outputs.version }}
+      TARGET_RID: ${{ matrix.rid }}
+      TARGET_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native prerequisites
+        run: |
+          ./eng/common/native/install-dependencies.sh osx
+          if ($LASTEXITCODE -ne 0) { throw "Native prerequisite installation failed." }
+      - name: Build runtime, target AotSdk, host tools, and single-file host
+        run: |
+          ./build.sh -ci -s "$env:SATORI_SUBSETS+host.native" -c Release -os osx -arch $env:TARGET_ARCH
+          if ($LASTEXITCODE -ne 0) { throw "macOS build failed for $env:TARGET_RID." }
+      - name: Upload desktop binaries
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            artifacts/bin/coreclr/osx.${{ matrix.arch }}.Release/libcoreclr.dylib
+            artifacts/bin/coreclr/osx.${{ matrix.arch }}.Release/libclrjit.dylib
+            artifacts/bin/coreclr/osx.${{ matrix.arch }}.Release/System.Private.CoreLib.dll
+            artifacts/bin/coreclr/osx.${{ matrix.arch }}.Release/aotsdk/
+            artifacts/bin/coreclr/osx.${{ matrix.arch }}.Release/ilc-published/
+          include-hidden-files: true
+          if-no-files-found: error
+      - name: Package target and host packs
+        run: ./eng/satori/package.ps1 -Action Pack -Rid $env:TARGET_RID -BuildRoot "artifacts/bin/coreclr/osx.$env:TARGET_ARCH.Release" -Version $env:PACKAGE_VERSION -Output artifacts/satori-nuget
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: satori-packages-${{ matrix.rid }}
+          path: artifacts/satori-nuget/PublishWithSatoriGC.*.${{ matrix.rid }}.*.nupkg
+          if-no-files-found: error
+
+  packages:
+    needs: [prepare, linux, windows, macos]
+    runs-on: ubuntu-24.04
+    env:
+      PACKAGE_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: satori-packages-*
+          path: artifacts/satori-nuget
+          merge-multiple: true
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: satori-nuget
+          path: artifacts/satori-nuget
+          if-no-files-found: error

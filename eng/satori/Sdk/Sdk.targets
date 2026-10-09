@@ -1,0 +1,24 @@
+<Project>
+  <PropertyGroup>
+    <!-- This describes the SDK process, not the application's target architecture. -->
+    <SatoriHostRuntimeIdentifier Condition="'$(SatoriHostRuntimeIdentifier)' == ''">$(NETCoreSdkRuntimeIdentifier)</SatoriHostRuntimeIdentifier>
+  </PropertyGroup>
+
+  <!-- SDK imports participate in the first restore. Adding these references from
+       NuGet build/buildTransitive imports would be excluded by NuGet during restore. -->
+  <ItemGroup Condition="'$(UseSatoriGC)' == 'true'">
+    <_SatoriRequestedRuntime Include="$(RuntimeIdentifier);$(RuntimeIdentifiers)" />
+    <_SatoriRestoreRuntime Include="@(_SatoriRequestedRuntime)" KeepDuplicates="false" />
+    <PackageReference Include="@(_SatoriRestoreRuntime->'PublishWithSatoriGC.Runtime.%(Identity)')"
+                      Version="[$(SatoriPackageVersion)]" PrivateAssets="all" IncludeAssets="build"
+                      Condition="'$(PublishAot)' != 'true'" />
+    <PackageReference Include="@(_SatoriRestoreRuntime->'PublishWithSatoriGC.AotSdk.%(Identity)')"
+                      Version="[$(SatoriPackageVersion)]" PrivateAssets="all" IncludeAssets="build"
+                      Condition="'$(PublishAot)' == 'true'" />
+    <PackageReference Include="PublishWithSatoriGC.AotTools.$(SatoriHostRuntimeIdentifier)"
+                      Version="[$(SatoriPackageVersion)]" PrivateAssets="all" IncludeAssets="build"
+                      Condition="'$(PublishAot)' == 'true' and '@(_SatoriRestoreRuntime)' != ''" />
+  </ItemGroup>
+
+  <Import Project="$(MSBuildThisFileDirectory)PublishWithSatoriGC.targets" />
+</Project>

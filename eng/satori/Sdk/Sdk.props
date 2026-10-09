@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <UseSatoriGC Condition="'$(UseSatoriGC)' == ''">true</UseSatoriGC>
+    <SatoriPackageVersion>__PACKAGE_VERSION__</SatoriPackageVersion>
+  </PropertyGroup>
+</Project>
