@@ -1,0 +1,16 @@
+{
+  "linux": [
+    {"rid": "linux-x64", "os": "linux", "arch": "x64", "tools": true, "artifact": "linux_x64", "container": "mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-amd64", "rootfs": "/crossrootfs/x64"},
+    {"rid": "linux-arm64", "os": "linux", "arch": "arm64", "tools": true, "artifact": "linux_arm64", "container": "mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-arm64", "rootfs": "/crossrootfs/arm64"},
+    {"rid": "linux-musl-x64", "os": "linux", "arch": "x64", "tools": true, "artifact": "linux_musl_x64", "container": "mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-amd64-musl", "rootfs": "/crossrootfs/x64"},
+    {"rid": "linux-musl-arm64", "os": "linux", "arch": "arm64", "tools": true, "artifact": "linux_musl_arm64", "container": "mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-arm64-musl", "rootfs": "/crossrootfs/arm64"}
+  ],
+  "windows": [
+    {"rid": "win-x64", "os": "windows", "arch": "x64", "tools": true, "artifact": "windows_x64", "runner": "windows-2025"},
+    {"rid": "win-arm64", "os": "windows", "arch": "arm64", "tools": true, "artifact": "windows_arm64", "runner": "windows-11-arm"}
+  ],
+  "macos": [
+    {"rid": "osx-x64", "os": "osx", "arch": "x64", "tools": true, "artifact": "osx_x64", "runner": "macos-15-intel"},
+    {"rid": "osx-arm64", "os": "osx", "arch": "arm64", "tools": true, "artifact": "osx_arm64", "runner": "macos-15"}
+  ]
+}
