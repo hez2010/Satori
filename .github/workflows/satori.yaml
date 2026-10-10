@@ -73,7 +73,7 @@ jobs:
         run: |
           $runnerUid = & id -u
           $runnerGid = & id -g
-          & docker run --rm --user "${runnerUid}:${runnerGid}" --volume "${env:GITHUB_WORKSPACE}:/satori" --workdir /satori --env "ROOTFS_DIR=$env:ROOTFS_DIR" --env DOTNET_CLI_HOME=/tmp/satori-dotnet --env NUGET_PACKAGES=/satori/.packages $env:PREREQS_IMAGE ./build.sh -ci -s "$env:SATORI_SUBSETS+host.native" --cross -c Release -arch $env:TARGET_ARCH
+          & docker run --rm --user "${runnerUid}:${runnerGid}" --volume "${env:GITHUB_WORKSPACE}:/satori" --workdir /satori --env "ROOTFS_DIR=$env:ROOTFS_DIR" --env DOTNET_CLI_HOME=/tmp/satori-dotnet --env NUGET_PACKAGES=/satori/.packages $env:PREREQS_IMAGE ./build.sh -ci -s "$env:SATORI_SUBSETS+host.native" --cross -c Release -arch $env:TARGET_ARCH -cmakeargs "-DCMAKE_PROJECT_CoreCLR_INCLUDE=/satori/eng/satori/ci.cmake"
           if ($LASTEXITCODE -ne 0) { throw "Linux build failed for $env:TARGET_RID." }
       - name: Upload desktop binaries
         uses: actions/upload-artifact@v4.6.2
