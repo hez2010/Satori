@@ -138,6 +138,24 @@ namespace System.Numerics.Tests
         }
 
         [Fact]
+        public static void Parse_OverlappingSignsWithSpaceNormalization()
+        {
+            NumberFormatInfo nfi = new NumberFormatInfo { PositiveSign = "\u00A0", NegativeSign = " +" };
+            const NumberStyles style = NumberStyles.AllowLeadingSign;
+            const string input = " +123";
+            byte[] utf8Input = Encoding.UTF8.GetBytes(input);
+            BigInteger expected = new BigInteger(-123);
+
+            Assert.Equal(expected, BigInteger.Parse(input, style, nfi));
+            Assert.Equal(expected, BigInteger.Parse(utf8Input, style, nfi));
+
+            Assert.True(BigInteger.TryParse(input.AsSpan(), style, nfi, out BigInteger result));
+            Assert.Equal(expected, result);
+            Assert.True(BigInteger.TryParse(utf8Input.AsSpan(), style, nfi, out result));
+            Assert.Equal(expected, result);
+        }
+
+        [Fact]
         public static void ParseUtf8_EmptySubspan_Fails()
         {
             BigInteger result;
@@ -1355,6 +1373,14 @@ namespace System.Numerics.Tests
             // Exercises IsSpaceReplacingChar matching U+202F against U+0020
             result = BigInteger.Parse("1\u202F234\u202F567", NumberStyles.AllowThousands, spaceCulture);
             Assert.Equal((BigInteger)1234567, result);
+        }
+
+        [Fact]
+        public static void ParseUtf8WithInvalidGroupSeparator()
+        {
+            NumberFormatInfo format = new() { NumberGroupSeparator = " " };
+
+            Assert.False(BigInteger.TryParse([(byte)'1', 0xA0, (byte)'2'], NumberStyles.AllowThousands, format, out _));
         }
     }
 
