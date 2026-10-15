@@ -486,6 +486,15 @@ namespace System.Tests
         }
 
         [Fact]
+        public static void DifferentMethodForDerivedBase()
+        {
+            var d1 = (Action<Derived>)Delegate.CreateDelegate(typeof(Action<Derived>), typeof(Base).GetMethod("M")!);
+            var d2 = (Action<Derived>)Delegate.CreateDelegate(typeof(Action<Derived>), typeof(Derived).GetMethod("M")!);
+            Assert.False(d1.Equals(d2));
+            Assert.False(d1.Method.Equals(d2.Method));
+        }
+
+        [Fact]
         public static void SameMethodObtainedViaDelegateAndReflectionAreSameForClass()
         {
             var m1 = ((MethodCallExpression)((Expression<Action>)(() => new Class().M())).Body).Method;
@@ -536,6 +545,24 @@ namespace System.Tests
             Assert.Equal(m2, b.Method);
         }
 
+        [Fact]
+        public static void OpenVirtualDelegates_InvokeResolvesOverride()
+        {
+            Func<object, string> toString = typeof(object).GetMethod(nameof(object.ToString)).CreateDelegate<Func<object, string>>();
+            Assert.Equal(nameof(OpenVirtualDerived), toString(new OpenVirtualDerived()));
+            Assert.Equal(typeof(Struct).ToString(), toString(new Struct()));
+            Assert.Equal(nameof(DayOfWeek.Monday), toString(DayOfWeek.Monday));
+        }
+
+        [Fact]
+        [ActiveIssue("https://github.com/dotnet/runtime/issues/134707", typeof(PlatformDetection), nameof(PlatformDetection.IsBrowser), nameof(PlatformDetection.IsMonoAOT))]
+        public static void OpenVirtualDelegates_InterfaceMethod_InvokeResolvesImplementation()
+        {
+            Func<IOpenVirtual, int> interfaceMethod = typeof(IOpenVirtual).GetMethod(nameof(IOpenVirtual.M)).CreateDelegate<Func<IOpenVirtual, int>>();
+            Assert.Equal(1, interfaceMethod(new OpenVirtualDerived()));
+            Assert.Equal(2, interfaceMethod(new OpenVirtualStruct()));
+        }
+
         [ConditionalFact(typeof(PlatformDetection), nameof(PlatformDetection.IsTypeEquivalenceSupported))]
         public static void TypeEquivalentDelegatesPointingToSameMethod_AreEqualAndHaveSameHashCode()
         {
@@ -570,6 +597,17 @@ namespace System.Tests
             internal virtual void M1() { }
             internal virtual void M2() { }
         }
+
+        interface IOpenVirtual { int M(); }
+        class OpenVirtualDerived : IOpenVirtual
+        {
+            public int M() => 1;
+            public override string ToString() => nameof(OpenVirtualDerived);
+        }
+        struct OpenVirtualStruct : IOpenVirtual { public int M() => 2; }
+
+        class Base { public virtual void M() { } }
+        class Derived : Base { public override void M() { } }
 
         private delegate void IntIntDelegate(int expected, int actual);
         private delegate void IntIntDelegateWithDefault(int expected, int actual = 7);
