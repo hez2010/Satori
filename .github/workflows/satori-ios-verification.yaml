@@ -27,23 +27,34 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
       DOTNET_NOLOGO: 1
       NUGET_XMLDOC_MODE: skip
+      SATORI_SOURCE_RUN_ID: '38707303131'
+      SATORI_SOURCE_HEAD_SHA: ef95f64a7afcd4ad45ff397742d0204705f469ec
+      SATORI_TEST_SDK_VERSION: 11.0.0-satori.38707303131.1
     steps:
       - uses: actions/checkout@v4
       - name: Verify exact source CI and artifact provenance
+        id: provenance
         run: |
-          $run = gh api repos/hez2010/Satori/actions/runs/38685412430 | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or $run.head_sha -ne '87a153827e0b7826df230432206d2e5db9aa6ce4' -or $run.run_attempt -ne 1 -or $run.path -ne '.github/workflows/satori.yaml' -or $run.repository.full_name -ne 'hez2010/Satori') { throw 'Source CI provenance mismatch.' }
-          $expected = @{ '11949444517'='satori-packages-sdk'; '11949912173'='satori-packages-iossimulator-arm64'; '11950612142'='satori-packages-osx-arm64' }
-          $inventory = gh api 'repos/hez2010/Satori/actions/runs/38685412430/artifacts?per_page=100' | ConvertFrom-Json
+          $ErrorActionPreference = 'Stop'
+          $run = gh api "repos/hez2010/Satori/actions/runs/$env:SATORI_SOURCE_RUN_ID" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $run.head_sha -ne $env:SATORI_SOURCE_HEAD_SHA -or $run.run_attempt -ne 1 -or $run.status -ne 'completed' -or $run.conclusion -ne 'success' -or $run.path -ne '.github/workflows/satori.yaml' -or $run.repository.full_name -ne 'hez2010/Satori') { throw 'Source CI provenance mismatch.' }
+          $expectedNames = @('satori-packages-sdk','satori-packages-iossimulator-arm64','satori-packages-osx-arm64')
+          $inventory = gh api "repos/hez2010/Satori/actions/runs/$env:SATORI_SOURCE_RUN_ID/artifacts?per_page=100" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Artifact inventory failed.' }
-          foreach ($id in $expected.Keys) {
-            $artifact = $inventory.artifacts | Where-Object id -EQ $id
-            if (!$artifact -or $artifact.name -ne $expected[$id] -or $artifact.expired -or $artifact.workflow_run.head_sha -ne $run.head_sha -or [string]$artifact.workflow_run.id -ne '38685412430') { throw 'Artifact provenance mismatch.' }
+          $selected = @()
+          foreach ($name in $expectedNames) {
+              $artifact = @($inventory.artifacts | Where-Object name -EQ $name)
+              if ($artifact.Count -ne 1 -or $artifact[0].expired -or $artifact[0].workflow_run.head_sha -ne $run.head_sha -or [string]$artifact[0].workflow_run.id -ne $env:SATORI_SOURCE_RUN_ID -or !$artifact[0].digest.StartsWith('sha256:')) { throw 'Artifact provenance mismatch.' }
+              $selected += $artifact[0]
           }
+          "artifact_ids=$($selected.id -join ',')" | Add-Content -LiteralPath $env:GITHUB_OUTPUT
+          $evidence = Join-Path $env:RUNNER_TEMP 'satori-ios-evidence'
+          [void][IO.Directory]::CreateDirectory($evidence)
+          [ordered]@{ SourceRunId=$env:SATORI_SOURCE_RUN_ID; SourceHeadSha=$run.head_sha; RunAttempt=$run.run_attempt; Workflow=$run.path; Repository=$run.repository.full_name; Artifacts=$selected } | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $evidence 'artifact-provenance.json')
       - uses: actions/download-artifact@v4
         with:
-          artifact-ids: 11949444517,11949912173,11950612142
-          run-id: 38685412430
+          artifact-ids: ${{ steps.provenance.outputs.artifact_ids }}
+          run-id: ${{ env.SATORI_SOURCE_RUN_ID }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/satori-ios-feed
           merge-multiple: true
@@ -81,7 +92,7 @@ jobs:
                   if ($spec.Count -ne 1) { throw 'Unexpected nuspec count.' }
                   $reader = [IO.StreamReader]::new($spec[0].Open())
                   try { [xml]$manifest = $reader.ReadToEnd() } finally { $reader.Dispose() }
-                  if ($manifest.package.metadata.version -ne '11.0.0-satori.38685412430.1') { throw 'Unexpected Satori package version.' }
+                  if ($manifest.package.metadata.version -ne $env:SATORI_TEST_SDK_VERSION) { throw 'Unexpected Satori package version.' }
                   $ids += [string]$manifest.package.metadata.id
               } finally { $zip.Dispose() }
           }
@@ -90,83 +101,7 @@ jobs:
           "<configuration><packageSources><clear/><add key=`"satori`" value=`"$escapedFeed`"/><add key=`"nuget.org`" value=`"https://api.nuget.org/v3/index.json`"/></packageSources><packageSourceMapping><packageSource key=`"satori`"><package pattern=`"PublishWithSatoriGC*`"/></packageSource><packageSource key=`"nuget.org`"><package pattern=`"*`"/></packageSource></packageSourceMapping></configuration>" | Set-Content NuGet.Config
           '<Project><PropertyGroup><ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally><CentralPackageVersionOverrideEnabled>false</CentralPackageVersionOverrideEnabled><CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled></PropertyGroup></Project>' | Set-Content Directory.Packages.props
           [void][IO.Directory]::CreateDirectory((Join-Path $env:RUNNER_TEMP 'satori-ios-evidence'))
-      - name: Build the candidate iOS NativeAOT runtime and verify its configuration
-        run: |
-          $ErrorActionPreference = 'Stop'
-          ./eng/common/native/install-dependencies.sh osx
-          if ($LASTEXITCODE -ne 0) { throw 'Native prerequisite installation failed.' }
-          ./build.sh -ci -s clr.nativeaotruntime --cross -c Release -os iossimulator -arch arm64 -cmakeargs '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON'
-          if ($LASTEXITCODE -ne 0) { throw 'Candidate iOS NativeAOT runtime build failed.' }
-          $databases = @(Get-ChildItem artifacts/obj -Recurse -Filter compile_commands.json)
-          $commands = @($databases | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json } | Where-Object { $_.file.Replace('\','/') -match '/nativeaot/Runtime/GCHelpers\.cpp$' })
-          $workstation = @($commands | Where-Object { $_.command -match 'Runtime\.WorkstationGC' })
-          $server = @($commands | Where-Object { $_.command -match 'Runtime\.ServerGC' })
-          if (!$workstation.Count -or !$server.Count) { throw 'NativeAOT compile commands are missing.' }
-          foreach ($command in $workstation) {
-              if ($command.command -match 'FEATURE_SVR_GC' -or $command.command -notmatch 'FEATURE_SATORI_GC') { throw 'Workstation GC build flags are incorrect.' }
-          }
-          foreach ($command in $server) {
-              if ($command.command -notmatch 'FEATURE_SVR_GC') { throw 'Server GC build flags unexpectedly changed.' }
-          }
-          $library = Get-Item artifacts/bin/coreclr/iossimulator.arm64.Release/aotsdk/libRuntime.WorkstationGC.a
-          [ordered]@{ CandidateHeadSha=$env:GITHUB_SHA; SourceHeadSha='87a153827e0b7826df230432206d2e5db9aa6ce4'; WorkstationFeatureServerGC=$false; WorkstationFeatureSatoriGC=$true; ServerFeatureServerGC=$true; WorkstationSha256=(Get-FileHash $library.FullName -Algorithm SHA256).Hash; CompileCommands=$workstation.command } | ConvertTo-Json -Depth 5 | Set-Content "$env:RUNNER_TEMP/satori-ios-evidence/build-config.json"
-      - name: Package isolated candidate fixtures and SDK
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $version = "11.0.0-satori.iosverify.$env:GITHUB_RUN_ID.1"
-          $feed = Join-Path $env:RUNNER_TEMP 'satori-ios-feed'
-          $buildSdk = [IO.Path]::GetFullPath('artifacts/bin/coreclr/iossimulator.arm64.Release/aotsdk')
-          $rebuilt = @{}
-          foreach ($file in Get-ChildItem -LiteralPath $buildSdk -Recurse -File) {
-              $rebuilt['aotsdk/' + [IO.Path]::GetRelativePath($buildSdk, $file.FullName).Replace('\','/')] = $file.FullName
-          }
-          $fixtures = @()
-          foreach ($package in @(Get-ChildItem -LiteralPath $feed -Filter '*.nupkg')) {
-              $source = [IO.Compression.ZipFile]::OpenRead($package.FullName)
-              try {
-                  $spec = @($source.Entries | Where-Object FullName -Like '*.nuspec')
-                  $reader = [IO.StreamReader]::new($spec[0].Open())
-                  try { [xml]$manifest = $reader.ReadToEnd() } finally { $reader.Dispose() }
-                  $id = [string]$manifest.package.metadata.id
-                  if ($id -eq 'PublishWithSatoriGC') { continue }
-                  $manifest.package.metadata.version = $version
-                  $output = Join-Path $feed "$id.$version.nupkg"
-                  $destination = [IO.Compression.ZipFile]::Open($output, [IO.Compression.ZipArchiveMode]::Create)
-                  $replacements = @{}
-                  if ($id -eq 'PublishWithSatoriGC.AotSdk.iossimulator-arm64') { $replacements = $rebuilt }
-                  try {
-                      $names = @{}
-                      foreach ($entry in $source.Entries) {
-                          $names[$entry.FullName] = $true
-                          $target = $destination.CreateEntry($entry.FullName)
-                          $target.ExternalAttributes = $entry.ExternalAttributes
-                          $stream = $target.Open()
-                          try {
-                              if ($entry.FullName -eq $spec[0].FullName) {
-                                  $bytes = [Text.Encoding]::UTF8.GetBytes($manifest.OuterXml)
-                                  $stream.Write($bytes, 0, $bytes.Length)
-                              } elseif ($replacements.ContainsKey($entry.FullName)) {
-                                  $inputStream = [IO.File]::OpenRead($replacements[$entry.FullName])
-                                  try { $inputStream.CopyTo($stream) } finally { $inputStream.Dispose() }
-                              } else {
-                                  $inputStream = $entry.Open()
-                                  try { $inputStream.CopyTo($stream) } finally { $inputStream.Dispose() }
-                              }
-                          } finally { $stream.Dispose() }
-                      }
-                      foreach ($name in $replacements.Keys) {
-                          if ($names.ContainsKey($name)) { continue }
-                          [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($destination, $replacements[$name], $name)
-                      }
-                  } finally { $destination.Dispose() }
-                  $fixtures += [ordered]@{ Id=$id; Version=$version; OriginalSha256=(Get-FileHash $package.FullName -Algorithm SHA256).Hash; CandidateSha256=(Get-FileHash $output -Algorithm SHA256).Hash; RebuiltEntries=@($replacements.Keys | Sort-Object) }
-              } finally { $source.Dispose() }
-          }
-          $fixtures | ConvertTo-Json -Depth 5 | Set-Content "$env:RUNNER_TEMP/satori-ios-evidence/candidate-fixtures.json"
-          ./eng/satori/package.ps1 -Action Sdk -Version $version -Output "$env:RUNNER_TEMP/satori-ios-feed"
-          if ($LASTEXITCODE -ne 0) { throw 'Candidate SDK packaging failed.' }
-          "SATORI_TEST_SDK_VERSION=$version" | Add-Content -LiteralPath $env:GITHUB_ENV
-      - name: Build and run iOS NativeAOT with central package management
+      - name: Build and run iOS CoreCLR ReadyToRun and NativeAOT with central package management
         run: |
           $project = @'
           <Project Sdk="Microsoft.NET.Sdk">
@@ -368,7 +303,7 @@ jobs:
               if ($LASTEXITCODE -ne 0) { throw 'Simulator boot failed.' }
               & xcrun simctl bootstatus $device -b
               if ($LASTEXITCODE -ne 0) { throw 'Simulator did not finish booting.' }
-              foreach ($mode in @('nativeaot')) {
+              foreach ($mode in @('coreclr-r2r','nativeaot')) {
                   try {
                   Write-Host "BEGIN MODE: $mode"
                   $appRoot = Join-Path $root $mode
@@ -450,7 +385,7 @@ jobs:
                       & xcrun simctl uninstall $device org.satori.gc.smoke 2>&1 | Write-Host
                   }
               }
-              [ordered]@{ SourceRunId='38685412430'; SourceHeadSha='87a153827e0b7826df230432206d2e5db9aa6ce4'; CandidateHeadSha=$env:GITHUB_SHA; PackageVersion=$env:SATORI_TEST_SDK_VERSION; TargetRid='iossimulator-arm64'; Runtime=$runtime.identifier; Modes=@('nativeaot'); RebuiltNativeAotRuntime=$true; CentralPackageManagement=$true; Success=($failures.Count -eq 0); Failures=$failures } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $evidence 'summary.json')
+              [ordered]@{ SourceRunId=$env:SATORI_SOURCE_RUN_ID; SourceHeadSha=$env:SATORI_SOURCE_HEAD_SHA; VerifierHeadSha=$env:GITHUB_SHA; PackageVersion=$env:SATORI_TEST_SDK_VERSION; TargetRid='iossimulator-arm64'; Runtime=$runtime.identifier; Modes=@('coreclr-r2r','nativeaot'); RebuiltNativeAotRuntime=$false; CentralPackageManagement=$true; Success=($failures.Count -eq 0); Failures=$failures } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $evidence 'summary.json')
               if ($failures.Count) { throw ($failures -join '; ') }
           } finally {
               & xcrun simctl shutdown $device | Out-Null
