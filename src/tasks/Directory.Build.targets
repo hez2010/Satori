@@ -1,4 +1,10 @@
 <Project>
+  <!-- Temporary override until upstream NuGet.Packaging updates its PKCS dependency. -->
+  <ItemGroup Condition="'$(TargetFrameworkIdentifier)' == '.NETCoreApp' and
+                        ('$(MSBuildProjectName)' == 'Crossgen2Tasks' or '$(MSBuildProjectName)' == 'installer.tasks')">
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="9.0.21" PrivateAssets="all" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- reference MSBuild directly to avoid bringing in it's package closure.  These all represent assemblies available to tasks and provided by MSBuild -->
     <PackageDownloadAndReference Include="Microsoft.Build" Version="$(MicrosoftBuildVersion)" Folder="ref/net472" Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net472'))" />
