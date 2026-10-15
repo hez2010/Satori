@@ -1373,6 +1373,68 @@ namespace System.Tests
             Assert.True(Half.IsNegative(result) && result == (Half)0.0f);
         }
 
+        [Theory]
+        [InlineData(0.0f, "x", "plus", "minus", "0x0pplus0")]
+        [InlineData(-0.0f, "X", "plus", "minus", "minus0X0Pplus0")]
+        [InlineData(0.0f, "x3", "plus", "minus", "0x0.000pplus0")]
+        [InlineData(-0.0f, "X3", "plus", "minus", "minus0X0.000Pplus0")]
+        [InlineData(3.0f, "x", "plus", "minus", "0x1.8pplus1")]
+        [InlineData(-0.75f, "X", "plus", "minus", "minus0X1.8Pminus1")]
+        [InlineData(3.0f, "X", "\u200E+", "\u200E-", "0X1.8P\u200E+1")]
+        [InlineData(-0.75f, "x", "\u200E+", "\u200E-", "\u200E-0x1.8p\u200E-1")]
+        [InlineData(3.0f, "x", "\u061C+", "\u061C-", "0x1.8p\u061C+1")]
+        [InlineData(-0.75f, "X", "\u061C+", "\u061C-", "\u061C-0X1.8P\u061C-1")]
+        [InlineData(0.75f, "x", "+", "\u2212", "0x1.8p\u22121")]
+        [InlineData(3.0f, "X", "", "~", "0X1.8P1")]
+        [InlineData(3.0f, "x", "-+", "-", "0x1.8p-+1")]
+        [InlineData(3.0f, "X", "-", "-+", "0X1.8P-1")]
+        [InlineData(3.0f, "x", "-", "+", "0x1.8p-1")]
+        [InlineData(0.75f, "X", "-", "+", "0X1.8P+1")]
+        [InlineData(-3.0f, "X", "-", "+", "+0X1.8P-1")]
+        [InlineData(-3.0f, "x", "-+", "-", "-0x1.8p-+1")]
+        [InlineData(-3.0f, "X", "-", "-+", "-+0X1.8P-1")]
+        [InlineData(-0.75f, "x", "-", "-+", "-+0x1.8p-+1")]
+        [InlineData(0.75f, "x", "-", "-+", "0x1.8p-+1")]
+        public static void ToStringHexFloat_CustomSigns(float f, string format, string positiveSign, string negativeSign, string expected)
+        {
+            Half value = (Half)f;
+            var info = new NumberFormatInfo { PositiveSign = positiveSign, NegativeSign = negativeSign };
+            Assert.Equal(expected, value.ToString(format, info));
+            NumberFormatTestHelper.TryFormatNumberTest(value, format, info, expected, formatCasingMatchesOutput: false);
+
+            Assert.Equal(BitConverter.HalfToInt16Bits(value), BitConverter.HalfToInt16Bits(Half.Parse(expected, NumberStyles.HexFloat, info)));
+            Assert.Equal(BitConverter.HalfToInt16Bits(value), BitConverter.HalfToInt16Bits(Half.Parse(expected.AsSpan(), NumberStyles.HexFloat, info)));
+            byte[] utf8 = Encoding.UTF8.GetBytes(expected);
+            Assert.Equal(BitConverter.HalfToInt16Bits(value), BitConverter.HalfToInt16Bits(Half.Parse(utf8, NumberStyles.HexFloat, info)));
+
+            Assert.True(Half.TryParse(expected, NumberStyles.HexFloat, info, out Half result));
+            Assert.Equal(BitConverter.HalfToInt16Bits(value), BitConverter.HalfToInt16Bits(result));
+            Assert.True(Half.TryParse(expected.AsSpan(), NumberStyles.HexFloat, info, out result));
+            Assert.Equal(BitConverter.HalfToInt16Bits(value), BitConverter.HalfToInt16Bits(result));
+            Assert.True(Half.TryParse(utf8, NumberStyles.HexFloat, info, out result));
+            Assert.Equal(BitConverter.HalfToInt16Bits(value), BitConverter.HalfToInt16Bits(result));
+        }
+
+        [Theory]
+        [InlineData(-3.0f, "E-0")]
+        [InlineData(-0.75f, "E-+")]
+        public static void ToStringE_CustomSignPrefixes(float f, string exponentSign)
+        {
+            Half value = (Half)f;
+            var info = new NumberFormatInfo { PositiveSign = "-", NegativeSign = "-+" };
+            string formatted = value.ToString("E", info);
+            Assert.StartsWith("-+", formatted);
+            Assert.Contains(exponentSign, formatted);
+
+            Assert.True(Half.TryParse(formatted, NumberStyles.Float, info, out Half result));
+            Assert.Equal(BitConverter.HalfToInt16Bits(value), BitConverter.HalfToInt16Bits(result));
+            Assert.True(Half.TryParse(formatted.AsSpan(), NumberStyles.Float, info, out result));
+            Assert.Equal(BitConverter.HalfToInt16Bits(value), BitConverter.HalfToInt16Bits(result));
+            byte[] utf8 = Encoding.UTF8.GetBytes(formatted);
+            Assert.True(Half.TryParse(utf8, NumberStyles.Float, info, out result));
+            Assert.Equal(BitConverter.HalfToInt16Bits(value), BitConverter.HalfToInt16Bits(result));
+        }
+
         [Fact]
         public static void HexFloat_CustomNumberFormat()
         {
@@ -2596,6 +2658,33 @@ namespace System.Tests
         {
             AssertExtensions.Equal(-expectedResult, Half.RadiansToDegrees(-value), allowedVariance);
             AssertExtensions.Equal(+expectedResult, Half.RadiansToDegrees(+value), allowedVariance);
+        }
+
+        // Both conversions are correctly rounded, so these compare bits rather than allowing a
+        // variance. The inputs are the ones the bulk data cannot reach: zero, the subnormal range
+        // on either side of the conversion, and an overflow.
+        [Theory]
+        [InlineData(0x0000, 0x0000, 0x0000)] // 0
+        [InlineData(0x0001, 0x0000, 0x0039)] // Epsilon
+        [InlineData(0x0200, 0x0009, 0x1729)] // 0x1p-15
+        [InlineData(0x0400, 0x0012, 0x1B29)] // MinNormal
+        [InlineData(0x3C00, 0x2478, 0x5329)] // One
+        [InlineData(0x7BFF, 0x6477, 0x7C00)] // MaxValue, overflows for RadiansToDegrees
+        [InlineData(0x7C00, 0x7C00, 0x7C00)] // PositiveInfinity
+        public static void DegreesToRadiansRadiansToDegreesEdgeTest(ushort valueBits, ushort degreesToRadiansBits, ushort radiansToDegreesBits)
+        {
+            const ushort SignMask = 0x8000;
+
+            Half value = BitConverter.UInt16BitsToHalf(valueBits);
+
+            AssertExtensions.Equal(BitConverter.UInt16BitsToHalf(degreesToRadiansBits), Half.DegreesToRadians(value));
+            AssertExtensions.Equal(BitConverter.UInt16BitsToHalf(radiansToDegreesBits), Half.RadiansToDegrees(value));
+
+            // Negating flips only the sign bit, which pins the sign of a zero result
+            Half negativeValue = BitConverter.UInt16BitsToHalf((ushort)(valueBits ^ SignMask));
+
+            AssertExtensions.Equal(BitConverter.UInt16BitsToHalf((ushort)(degreesToRadiansBits ^ SignMask)), Half.DegreesToRadians(negativeValue));
+            AssertExtensions.Equal(BitConverter.UInt16BitsToHalf((ushort)(radiansToDegreesBits ^ SignMask)), Half.RadiansToDegrees(negativeValue));
         }
 
         [Theory]
