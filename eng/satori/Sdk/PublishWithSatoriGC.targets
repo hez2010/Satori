@@ -68,9 +68,9 @@
     </ItemGroup>
   </Target>
 
-  <!-- Mobile runtime packs also contribute stock private assemblies. ILC keeps
-       the first reference with a given name, so replace these after collection. -->
-  <Target Name="UseSatoriNativeAotAssemblies" AfterTargets="ComputeIlcCompileInputs" DependsOnTargets="_ResolveSatoriPaths"
+  <!-- Mobile SDKs collect ILC inputs through their own targets. Replace private
+       references after collection, immediately before writing the response file. -->
+  <Target Name="UseSatoriNativeAotAssemblies" BeforeTargets="WriteIlcRspFileForCompilation" DependsOnTargets="_ResolveSatoriPaths"
           Condition="'$(UseSatoriGC)' == 'true' and '$(PublishAot)' == 'true'">
     <ItemGroup>
       <_SatoriPrivateSdkAssembly Include="$(IlcSdkPath)*.dll" />
