@@ -56,19 +56,20 @@ jobs:
           $root = Join-Path $env:RUNNER_TEMP 'satori-ios-smoke'
           [void][IO.Directory]::CreateDirectory($root)
           Set-Location $root
-          '{"sdk":{"version":"11.0.100-rc.2.26504.105","rollForward":"disable"}}' | Set-Content global.json
+          '{"sdk":{"version":"11.0.100-rc.2.26504.105","rollForward":"disable","workloadVersion":"11.0.100-rc.2.26513.2"}}' | Set-Content global.json
           $xcode = @(Get-ChildItem /Applications -Directory -Filter 'Xcode*.app' | ForEach-Object {
               $application = $_
               $versionText = & "$($application.FullName)/Contents/Developer/usr/bin/xcodebuild" -version
               if ($LASTEXITCODE -eq 0 -and ($versionText -join "`n") -match 'Xcode (\d+(?:\.\d+)*)') { [pscustomobject]@{ Version=[version]$Matches[1]; Path="$($application.FullName)/Contents/Developer" } }
-          } | Sort-Object Version -Descending)
-          if (!$xcode.Count) { throw 'No Xcode installation found.' }
+          } | Where-Object { $_.Version.Major -eq 27 -and $_.Version.Minor -eq 0 } | Sort-Object Version -Descending)
+          if (!$xcode.Count) { throw 'Xcode 27.0 is required for the pinned RC2 workload.' }
           & sudo xcode-select --switch $xcode[0].Path
           if ($LASTEXITCODE -ne 0) { throw 'Xcode selection failed.' }
           & xcodebuild -version
           & dotnet --info
-          & dotnet workload install ios --skip-manifest-update --source https://api.nuget.org/v3/index.json
+          & dotnet workload install ios --source https://api.nuget.org/v3/index.json
           if ($LASTEXITCODE -ne 0) { throw 'iOS workload installation failed.' }
+          & dotnet workload --version
           $feed = Join-Path $env:RUNNER_TEMP 'satori-ios-feed'
           $packages = @(Get-ChildItem -LiteralPath $feed -Filter '*.nupkg')
           if ($packages.Count -ne 6) { throw 'Expected six packages from the pinned SDK, iOS and macOS artifacts.' }
