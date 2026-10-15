@@ -90,13 +90,83 @@ jobs:
           "<configuration><packageSources><clear/><add key=`"satori`" value=`"$escapedFeed`"/><add key=`"nuget.org`" value=`"https://api.nuget.org/v3/index.json`"/></packageSources><packageSourceMapping><packageSource key=`"satori`"><package pattern=`"PublishWithSatoriGC*`"/></packageSource><packageSource key=`"nuget.org`"><package pattern=`"*`"/></packageSource></packageSourceMapping></configuration>" | Set-Content NuGet.Config
           '<Project><PropertyGroup><ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally><CentralPackageVersionOverrideEnabled>false</CentralPackageVersionOverrideEnabled><CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled></PropertyGroup></Project>' | Set-Content Directory.Packages.props
           [void][IO.Directory]::CreateDirectory((Join-Path $env:RUNNER_TEMP 'satori-ios-evidence'))
-      - name: Package the candidate SDK without rebuilding runtime packs
+      - name: Build the candidate iOS NativeAOT runtime and verify its configuration
         run: |
+          $ErrorActionPreference = 'Stop'
+          ./eng/common/native/install-dependencies.sh osx
+          if ($LASTEXITCODE -ne 0) { throw 'Native prerequisite installation failed.' }
+          ./build.sh -ci -s clr.nativeaotruntime --cross -c Release -os iossimulator -arch arm64 -cmakeargs '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON'
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate iOS NativeAOT runtime build failed.' }
+          $databases = @(Get-ChildItem artifacts/obj -Recurse -Filter compile_commands.json)
+          $commands = @($databases | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json } | Where-Object { $_.file.Replace('\','/') -match '/nativeaot/Runtime/GCHelpers\.cpp$' })
+          $workstation = @($commands | Where-Object { $_.command -match 'Runtime\.WorkstationGC' })
+          $server = @($commands | Where-Object { $_.command -match 'Runtime\.ServerGC' })
+          if (!$workstation.Count -or !$server.Count) { throw 'NativeAOT compile commands are missing.' }
+          foreach ($command in $workstation) {
+              if ($command.command -match 'FEATURE_SVR_GC' -or $command.command -notmatch 'FEATURE_SATORI_GC') { throw 'Workstation GC build flags are incorrect.' }
+          }
+          foreach ($command in $server) {
+              if ($command.command -notmatch 'FEATURE_SVR_GC') { throw 'Server GC build flags unexpectedly changed.' }
+          }
+          $library = Get-Item artifacts/bin/coreclr/iossimulator.arm64.Release/aotsdk/libRuntime.WorkstationGC.a
+          [ordered]@{ CandidateHeadSha=$env:GITHUB_SHA; SourceHeadSha='87a153827e0b7826df230432206d2e5db9aa6ce4'; WorkstationFeatureServerGC=$false; WorkstationFeatureSatoriGC=$true; ServerFeatureServerGC=$true; WorkstationSha256=(Get-FileHash $library.FullName -Algorithm SHA256).Hash; CompileCommands=$workstation.command } | ConvertTo-Json -Depth 5 | Set-Content "$env:RUNNER_TEMP/satori-ios-evidence/build-config.json"
+      - name: Package isolated candidate fixtures and SDK
+        run: |
+          $ErrorActionPreference = 'Stop'
           $version = "11.0.0-satori.iosverify.$env:GITHUB_RUN_ID.1"
+          $feed = Join-Path $env:RUNNER_TEMP 'satori-ios-feed'
+          $buildSdk = [IO.Path]::GetFullPath('artifacts/bin/coreclr/iossimulator.arm64.Release/aotsdk')
+          $rebuilt = @{}
+          foreach ($file in Get-ChildItem -LiteralPath $buildSdk -Recurse -File) {
+              $rebuilt['aotsdk/' + [IO.Path]::GetRelativePath($buildSdk, $file.FullName).Replace('\','/')] = $file.FullName
+          }
+          $fixtures = @()
+          foreach ($package in @(Get-ChildItem -LiteralPath $feed -Filter '*.nupkg')) {
+              $source = [IO.Compression.ZipFile]::OpenRead($package.FullName)
+              try {
+                  $spec = @($source.Entries | Where-Object FullName -Like '*.nuspec')
+                  $reader = [IO.StreamReader]::new($spec[0].Open())
+                  try { [xml]$manifest = $reader.ReadToEnd() } finally { $reader.Dispose() }
+                  $id = [string]$manifest.package.metadata.id
+                  if ($id -eq 'PublishWithSatoriGC') { continue }
+                  $manifest.package.metadata.version = $version
+                  $output = Join-Path $feed "$id.$version.nupkg"
+                  $destination = [IO.Compression.ZipFile]::Open($output, [IO.Compression.ZipArchiveMode]::Create)
+                  $replacements = @{}
+                  if ($id -eq 'PublishWithSatoriGC.AotSdk.iossimulator-arm64') { $replacements = $rebuilt }
+                  try {
+                      $names = @{}
+                      foreach ($entry in $source.Entries) {
+                          $names[$entry.FullName] = $true
+                          $target = $destination.CreateEntry($entry.FullName)
+                          $target.ExternalAttributes = $entry.ExternalAttributes
+                          $stream = $target.Open()
+                          try {
+                              if ($entry.FullName -eq $spec[0].FullName) {
+                                  $bytes = [Text.Encoding]::UTF8.GetBytes($manifest.OuterXml)
+                                  $stream.Write($bytes, 0, $bytes.Length)
+                              } elseif ($replacements.ContainsKey($entry.FullName)) {
+                                  $inputStream = [IO.File]::OpenRead($replacements[$entry.FullName])
+                                  try { $inputStream.CopyTo($stream) } finally { $inputStream.Dispose() }
+                              } else {
+                                  $inputStream = $entry.Open()
+                                  try { $inputStream.CopyTo($stream) } finally { $inputStream.Dispose() }
+                              }
+                          } finally { $stream.Dispose() }
+                      }
+                      foreach ($name in $replacements.Keys) {
+                          if ($names.ContainsKey($name)) { continue }
+                          [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($destination, $replacements[$name], $name)
+                      }
+                  } finally { $destination.Dispose() }
+                  $fixtures += [ordered]@{ Id=$id; Version=$version; OriginalSha256=(Get-FileHash $package.FullName -Algorithm SHA256).Hash; CandidateSha256=(Get-FileHash $output -Algorithm SHA256).Hash; RebuiltEntries=@($replacements.Keys | Sort-Object) }
+              } finally { $source.Dispose() }
+          }
+          $fixtures | ConvertTo-Json -Depth 5 | Set-Content "$env:RUNNER_TEMP/satori-ios-evidence/candidate-fixtures.json"
           ./eng/satori/package.ps1 -Action Sdk -Version $version -Output "$env:RUNNER_TEMP/satori-ios-feed"
           if ($LASTEXITCODE -ne 0) { throw 'Candidate SDK packaging failed.' }
           "SATORI_TEST_SDK_VERSION=$version" | Add-Content -LiteralPath $env:GITHUB_ENV
-      - name: Build and run CoreCLR ReadyToRun and NativeAOT with central package management
+      - name: Build and run iOS NativeAOT with central package management
         run: |
           $project = @'
           <Project Sdk="Microsoft.NET.Sdk">
@@ -114,7 +184,6 @@ jobs:
               <SelfContained>true</SelfContained>
               <UseMonoRuntime>false</UseMonoRuntime>
               <UseSatoriGC>__SATORI__</UseSatoriGC>
-          <SatoriPackageVersion>11.0.0-satori.38685412430.1</SatoriPackageVersion>
               <_IsPublishing>true</_IsPublishing>
               <PublishAot>__AOT__</PublishAot>
               <PublishReadyToRun>__R2R__</PublishReadyToRun>
@@ -186,6 +255,7 @@ jobs:
                       Require(mode.StartsWith("stock-") ? !satori : satori, "Unexpected runtime GC selection");
                       Require(RuntimeInformation.ProcessArchitecture == Architecture.Arm64, "Unexpected architecture");
                       if (mode == "nativeaot") Require(!RuntimeFeature.IsDynamicCodeSupported, "NativeAOT was not selected");
+                      Require(!System.Runtime.GCSettings.IsServerGC, "Unsupported server GC was reported on iOS");
                       groups++;
                       Trace("configuration-passed");
 
@@ -250,6 +320,7 @@ jobs:
                   json.WriteString("Architecture", RuntimeInformation.ProcessArchitecture.ToString());
                   json.WriteString("Runtime", RuntimeInformation.FrameworkDescription);
                   json.WriteBoolean("DynamicCodeSupported", RuntimeFeature.IsDynamicCodeSupported);
+                  json.WriteBoolean("ServerGC", System.Runtime.GCSettings.IsServerGC);
                   json.WriteString("Error", error);
                   json.WriteEndObject(); json.Flush();
                   }
@@ -322,7 +393,8 @@ jobs:
                       if (!$rsp.Count) { throw 'NativeAOT response file missing.' }
                       $references = @(Get-Content -LiteralPath $rsp.FullName | Where-Object { $_ -match 'System.Private.CoreLib\.dll' })
                       $references | Write-Host
-                      if (!$references.Count -or @($references | Where-Object { $_.Replace('\','/') -notmatch 'publishwithsatorigc\.aotsdk\.iossimulator-arm64/11\.0\.0-satori\.38685412430\.1/aotsdk/System\.Private\.CoreLib\.dll' }).Count) { throw 'ILC did not exclusively use the Satori target CoreLib.' }
+                      $expectedCoreLib = 'publishwithsatorigc.aotsdk.iossimulator-arm64/' + $env:SATORI_TEST_SDK_VERSION + '/aotsdk/System.Private.CoreLib.dll'
+                      if (!$references.Count -or @($references | Where-Object { !$_.Replace('\','/').Contains($expectedCoreLib) }).Count) { throw 'ILC did not exclusively use the Satori target CoreLib.' }
                   }
                   & codesign --verify --deep --strict $app
                   if ($LASTEXITCODE -ne 0) { throw 'App signing verification failed.' }
@@ -378,7 +450,7 @@ jobs:
                       & xcrun simctl uninstall $device org.satori.gc.smoke 2>&1 | Write-Host
                   }
               }
-              [ordered]@{ SourceRunId='38685412430'; SourceHeadSha='87a153827e0b7826df230432206d2e5db9aa6ce4'; PackageVersion='11.0.0-satori.38685412430.1'; TargetRid='iossimulator-arm64'; Runtime=$runtime.identifier; Modes=@('nativeaot'); CandidateSdkVersion=$env:SATORI_TEST_SDK_VERSION; CentralPackageManagement=$true; Success=($failures.Count -eq 0); Failures=$failures } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $evidence 'summary.json')
+              [ordered]@{ SourceRunId='38685412430'; SourceHeadSha='87a153827e0b7826df230432206d2e5db9aa6ce4'; CandidateHeadSha=$env:GITHUB_SHA; PackageVersion=$env:SATORI_TEST_SDK_VERSION; TargetRid='iossimulator-arm64'; Runtime=$runtime.identifier; Modes=@('nativeaot'); RebuiltNativeAotRuntime=$true; CentralPackageManagement=$true; Success=($failures.Count -eq 0); Failures=$failures } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $evidence 'summary.json')
               if ($failures.Count) { throw ($failures -join '; ') }
           } finally {
               & xcrun simctl shutdown $device | Out-Null
