@@ -2,7 +2,7 @@ name: Satori
 
 on:
   push:
-    branches: ["**"]
+    branches: [build_net10.0, build_net11.0]
   pull_request:
   workflow_dispatch:
     inputs:
