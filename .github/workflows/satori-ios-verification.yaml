@@ -107,6 +107,7 @@ jobs:
               <Nullable>enable</Nullable>
               <SelfContained>true</SelfContained>
               <UseMonoRuntime>false</UseMonoRuntime>
+              <UseSatoriGC>__SATORI__</UseSatoriGC>
               <_IsPublishing>true</_IsPublishing>
               <PublishAot>__AOT__</PublishAot>
               <PublishReadyToRun>__R2R__</PublishReadyToRun>
@@ -125,26 +126,43 @@ jobs:
           using System.Runtime.InteropServices;
           using System.Text.Json;
 
+          Console.WriteLine("SATORI_SMOKE managed entry");
           UIApplication.Main(args, null, typeof(AppDelegate));
 
           [Register("AppDelegate")]
           public sealed class AppDelegate : UIApplicationDelegate
           {
-              public override UIWindow? Window { get; set; }
-              public override bool FinishedLaunching(UIApplication application, NSDictionary options)
+              public override bool FinishedLaunching(UIApplication application, NSDictionary? options)
               {
-                  var controller = new UIViewController();
-                  controller.View!.BackgroundColor = UIColor.White;
-                  Window = new UIWindow(UIScreen.MainScreen.Bounds) { RootViewController = controller };
-                  Window.MakeKeyAndVisible();
+                  Smoke.Trace("finished-launching");
                   _ = Task.Run(Smoke.Run);
                   return true;
+              }
+              public override UISceneConfiguration GetConfiguration(UIApplication application, UISceneSession session, UISceneConnectionOptions options)
+                  => new("Default Configuration", session.Role) { DelegateType = typeof(SceneDelegate) };
+          }
+
+          [Register("SceneDelegate")]
+          public sealed class SceneDelegate : UIWindowSceneDelegate
+          {
+              public override UIWindow? Window { get; set; }
+              public override void WillConnect(UIScene scene, UISceneSession session, UISceneConnectionOptions options)
+              {
+                  if (scene is not UIWindowScene windowScene) return;
+                  var controller = new UIViewController();
+                  controller.View!.BackgroundColor = UIColor.White;
+                  Window = new UIWindow(windowScene) { RootViewController = controller };
+                  Window.MakeKeyAndVisible();
               }
           }
 
           static class Smoke
           {
               static int finalized;
+              static int groups;
+              static bool satori;
+              static readonly string mode = Environment.GetEnvironmentVariable("SATORI_SMOKE_MODE") ?? "unknown";
+              static readonly string run = Environment.GetEnvironmentVariable("SATORI_SMOKE_RUN") ?? "unknown";
               sealed class Finalizable { ~Finalizable() => Interlocked.Increment(ref finalized); }
               sealed class Node { public Node? Next; public byte[] Data = new byte[256]; }
               static void Require(bool condition, string message) { if (!condition) throw new Exception(message); }
@@ -153,18 +171,16 @@ jobs:
 
               public static void Run()
               {
-                  string mode = Environment.GetEnvironmentVariable("SATORI_SMOKE_MODE") ?? "unknown";
-                  string run = Environment.GetEnvironmentVariable("SATORI_SMOKE_RUN") ?? "unknown";
                   string? error = null;
-                  bool satori = false;
-                  int groups = 0;
+                  Trace("worker-started");
                   try
                   {
                       satori = GC.GetConfigurationVariables().TryGetValue("SatoriGC", out object? enabled) && enabled is true;
-                      Require(satori, "The running app is not using Satori GC");
+                      Require(mode.StartsWith("stock-") ? !satori : satori, "Unexpected runtime GC selection");
                       Require(RuntimeInformation.ProcessArchitecture == Architecture.Arm64, "Unexpected architecture");
                       if (mode == "nativeaot") Require(!RuntimeFeature.IsDynamicCodeSupported, "NativeAOT was not selected");
                       groups++;
+                      Trace("configuration-passed");
 
                       var roots = new Node[2048];
                       for (int i = 0; i < roots.Length; i++) { roots[i] = new Node(); roots[i].Data[0] = (byte)i; }
@@ -172,6 +188,7 @@ jobs:
                       GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
                       for (int i = 0; i < roots.Length; i++) Require(roots[i].Data[0] == (byte)i && ReferenceEquals(roots[i].Next, roots[(i + 1) % roots.Length]), "Live object graph was corrupted");
                       groups++;
+                      Trace("live-graph-passed");
 
                       var pinnedData = new byte[4096];
                       pinnedData[2048] = 123;
@@ -184,11 +201,13 @@ jobs:
                       }
                       finally { pin.Free(); }
                       groups++;
+                      Trace("pinning-passed");
 
                       WeakReference weak = CreateGarbage();
                       GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
                       Require(finalized > 0 && !weak.IsAlive, "Finalization or weak references failed");
                       groups++;
+                      Trace("finalization-passed");
 
                       Task.WaitAll(Enumerable.Range(0, 4).Select(worker => Task.Run(() =>
                       {
@@ -205,19 +224,29 @@ jobs:
                       groups++;
                   }
                   catch (Exception exception) { error = exception.ToString(); }
+                  Trace("complete", true, error);
+              }
+
+              public static void Trace(string stage, bool complete = false, string? error = null)
+              {
+                  Console.WriteLine($"SATORI_SMOKE stage={stage} mode={mode} SatoriGC={satori} groups={groups} error={error}");
                   string directory = NSFileManager.DefaultManager.GetUrls(NSSearchPathDirectory.CachesDirectory, NSSearchPathDomain.User)[0].Path!;
-                  using var stream = File.Create(Path.Combine(directory, "satori-smoke.json"));
-                  using var json = new Utf8JsonWriter(stream);
+                  string temporary = Path.Combine(directory, "satori-smoke.tmp");
+                  using (var stream = File.Create(temporary))
+                  using (var json = new Utf8JsonWriter(stream))
+                  {
                   json.WriteStartObject();
                   json.WriteString("Run", run); json.WriteString("Mode", mode);
-                  json.WriteBoolean("Success", error is null); json.WriteBoolean("SatoriGC", satori);
+                  json.WriteString("Stage", stage); json.WriteBoolean("Completed", complete);
+                  json.WriteBoolean("Success", complete && error is null); json.WriteBoolean("SatoriGC", satori);
                   json.WriteNumber("PassedGroups", groups);
                   json.WriteString("Architecture", RuntimeInformation.ProcessArchitecture.ToString());
                   json.WriteString("Runtime", RuntimeInformation.FrameworkDescription);
                   json.WriteBoolean("DynamicCodeSupported", RuntimeFeature.IsDynamicCodeSupported);
                   json.WriteString("Error", error);
                   json.WriteEndObject(); json.Flush();
-                  Console.WriteLine($"SATORI_SMOKE mode={mode} success={error is null} SatoriGC={satori} groups={groups} error={error}");
+                  }
+                  File.Move(temporary, Path.Combine(directory, "satori-smoke.json"), true);
               }
           }
           '@
@@ -233,6 +262,15 @@ jobs:
           <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
           <key>UILaunchScreen</key><dict/>
           <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
+          <key>UIApplicationSceneManifest</key><dict>
+            <key>UIApplicationSupportsMultipleScenes</key><false/>
+            <key>UISceneConfigurations</key><dict>
+              <key>UIWindowSceneSessionRoleApplication</key><array><dict>
+                <key>UISceneConfigurationName</key><string>Default Configuration</string>
+                <key>UISceneDelegateClassName</key><string>SceneDelegate</string>
+              </dict></array>
+            </dict>
+          </dict>
           </dict></plist>
           '@
           $ErrorActionPreference = 'Stop'
@@ -246,17 +284,21 @@ jobs:
           $device = (& xcrun simctl create "Satori-$env:GITHUB_RUN_ID" com.apple.CoreSimulator.SimDeviceType.iPhone-16 $runtime.identifier).Trim()
           if ($LASTEXITCODE -ne 0) { throw 'Simulator creation failed.' }
           $env:SIMCTL_CHILD_SATORI_SMOKE_RUN = "$env:GITHUB_RUN_ID.$env:GITHUB_RUN_ATTEMPT"
+          $failures = @()
           try {
               & xcrun simctl boot $device
               if ($LASTEXITCODE -ne 0) { throw 'Simulator boot failed.' }
               & xcrun simctl bootstatus $device -b
               if ($LASTEXITCODE -ne 0) { throw 'Simulator did not finish booting.' }
-              foreach ($mode in @('coreclr-r2r','nativeaot')) {
+              foreach ($mode in @('stock-coreclr-r2r','coreclr-r2r','nativeaot')) {
+                  try {
+                  Write-Host "BEGIN MODE: $mode"
                   $appRoot = Join-Path $root $mode
                   [void][IO.Directory]::CreateDirectory($appRoot)
                   $aot = if ($mode -eq 'nativeaot') { 'true' } else { 'false' }
                   $r2r = if ($mode -eq 'nativeaot') { 'false' } else { 'true' }
-                  $project.Replace('__AOT__',$aot).Replace('__R2R__',$r2r) | Set-Content (Join-Path $appRoot 'SatoriIosSmoke.csproj')
+                  $satori = if ($mode.StartsWith('stock-')) { 'false' } else { 'true' }
+                  $project.Replace('__AOT__',$aot).Replace('__R2R__',$r2r).Replace('__SATORI__',$satori) | Set-Content (Join-Path $appRoot 'SatoriIosSmoke.csproj')
                   $program | Set-Content (Join-Path $appRoot 'Program.cs')
                   $plist | Set-Content (Join-Path $appRoot 'Info.plist')
                   Push-Location $appRoot
@@ -290,13 +332,23 @@ jobs:
                   try {
                       $deadline = [DateTime]::UtcNow.AddMinutes(3)
                       $result = $null
+                      $lastStage = ''
                       while ([DateTime]::UtcNow -lt $deadline) {
                           if (Test-Path -LiteralPath $reportPath) {
                               try { $candidate = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json } catch { $candidate = $null }
-                              if ($candidate.Run -eq $env:SIMCTL_CHILD_SATORI_SMOKE_RUN -and $candidate.Mode -eq $mode) { $result = $candidate; break }
+                              if ($candidate.Run -eq $env:SIMCTL_CHILD_SATORI_SMOKE_RUN -and $candidate.Mode -eq $mode) {
+                                  if ($candidate.Stage -ne $lastStage) { Write-Host "$mode stage=$($candidate.Stage) groups=$($candidate.PassedGroups) SatoriGC=$($candidate.SatoriGC)"; $lastStage=$candidate.Stage }
+                                  if ($candidate.Completed) { $result = $candidate; break }
+                              }
                           }
                           if ($process.HasExited) { break }
                           Start-Sleep -Seconds 2
+                      }
+                      if (!$result) {
+                          Write-Host "No completion report: $mode; collecting process sample and simulator diagnostics."
+                          $appPids = @(& pgrep -x SatoriIosSmoke)
+                          foreach ($appPid in $appPids) { & sample $appPid 2 1 2>&1 | Select-Object -First 160 | Write-Host }
+                          & xcrun simctl spawn $device log show --last 3m --style compact --predicate 'process == "SatoriIosSmoke"' 2>&1 | Select-Object -Last 80 | Write-Host
                       }
                   } finally {
                       & xcrun simctl terminate $device org.satori.gc.smoke | Out-Null
@@ -307,10 +359,19 @@ jobs:
                   if (!$result) { throw "No fresh completion report from $mode app." }
                   $result | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $evidence "$mode.json")
                   $result | ConvertTo-Json -Depth 5 | Write-Host
-                  if (!$result.Success -or !$result.SatoriGC -or $result.PassedGroups -ne 5 -or $result.Architecture -ne 'Arm64') { throw "iOS $mode runtime verification failed." }
+                  $expectedSatori = !$mode.StartsWith('stock-')
+                  if (!$result.Success -or $result.SatoriGC -ne $expectedSatori -or $result.PassedGroups -ne 5 -or $result.Architecture -ne 'Arm64') { throw "iOS $mode runtime verification failed." }
                   & xcrun simctl uninstall $device org.satori.gc.smoke
+                  } catch {
+                      $message = $_.Exception.Message
+                      Write-Host "FAILED MODE: $mode - $message"
+                      $failures += "$mode - $message"
+                      if (!(Test-Path -LiteralPath (Join-Path $evidence "$mode.json"))) { [ordered]@{ Mode=$mode; Success=$false; Error=$message } | ConvertTo-Json | Set-Content (Join-Path $evidence "$mode.json") }
+                      & xcrun simctl uninstall $device org.satori.gc.smoke 2>&1 | Write-Host
+                  }
               }
-              [ordered]@{ SourceRunId='38685412430'; SourceHeadSha='87a153827e0b7826df230432206d2e5db9aa6ce4'; PackageVersion='11.0.0-satori.38685412430.1'; TargetRid='iossimulator-arm64'; Runtime=$runtime.identifier; Modes=@('coreclr-r2r','nativeaot'); CentralPackageManagement=$true; Success=$true } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $evidence 'summary.json')
+              [ordered]@{ SourceRunId='38685412430'; SourceHeadSha='87a153827e0b7826df230432206d2e5db9aa6ce4'; PackageVersion='11.0.0-satori.38685412430.1'; TargetRid='iossimulator-arm64'; Runtime=$runtime.identifier; Modes=@('stock-coreclr-r2r','coreclr-r2r','nativeaot'); CentralPackageManagement=$true; Success=($failures.Count -eq 0); Failures=$failures } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $evidence 'summary.json')
+              if ($failures.Count) { throw ($failures -join '; ') }
           } finally {
               & xcrun simctl shutdown $device | Out-Null
               & xcrun simctl delete $device | Out-Null
