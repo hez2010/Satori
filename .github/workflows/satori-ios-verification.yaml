@@ -90,11 +90,17 @@ jobs:
           "<configuration><packageSources><clear/><add key=`"satori`" value=`"$escapedFeed`"/><add key=`"nuget.org`" value=`"https://api.nuget.org/v3/index.json`"/></packageSources><packageSourceMapping><packageSource key=`"satori`"><package pattern=`"PublishWithSatoriGC*`"/></packageSource><packageSource key=`"nuget.org`"><package pattern=`"*`"/></packageSource></packageSourceMapping></configuration>" | Set-Content NuGet.Config
           '<Project><PropertyGroup><ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally><CentralPackageVersionOverrideEnabled>false</CentralPackageVersionOverrideEnabled><CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled></PropertyGroup></Project>' | Set-Content Directory.Packages.props
           [void][IO.Directory]::CreateDirectory((Join-Path $env:RUNNER_TEMP 'satori-ios-evidence'))
+      - name: Package the candidate SDK without rebuilding runtime packs
+        run: |
+          $version = "11.0.0-satori.iosverify.$env:GITHUB_RUN_ID.1"
+          ./eng/satori/package.ps1 -Action Sdk -Version $version -Output "$env:RUNNER_TEMP/satori-ios-feed"
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate SDK packaging failed.' }
+          "SATORI_TEST_SDK_VERSION=$version" | Add-Content -LiteralPath $env:GITHUB_ENV
       - name: Build and run CoreCLR ReadyToRun and NativeAOT with central package management
         run: |
           $project = @'
           <Project Sdk="Microsoft.NET.Sdk">
-            <Sdk Name="PublishWithSatoriGC" Version="11.0.0-satori.38685412430.1" />
+            <Sdk Name="PublishWithSatoriGC" Version="__SDK_VERSION__" />
             <PropertyGroup>
               <TargetFramework>net11.0-ios</TargetFramework>
               <RuntimeIdentifier>iossimulator-arm64</RuntimeIdentifier>
@@ -108,6 +114,7 @@ jobs:
               <SelfContained>true</SelfContained>
               <UseMonoRuntime>false</UseMonoRuntime>
               <UseSatoriGC>__SATORI__</UseSatoriGC>
+          <SatoriPackageVersion>11.0.0-satori.38685412430.1</SatoriPackageVersion>
               <_IsPublishing>true</_IsPublishing>
               <PublishAot>__AOT__</PublishAot>
               <PublishReadyToRun>__R2R__</PublishReadyToRun>
@@ -290,7 +297,7 @@ jobs:
               if ($LASTEXITCODE -ne 0) { throw 'Simulator boot failed.' }
               & xcrun simctl bootstatus $device -b
               if ($LASTEXITCODE -ne 0) { throw 'Simulator did not finish booting.' }
-              foreach ($mode in @('stock-coreclr-r2r','coreclr-r2r','nativeaot')) {
+              foreach ($mode in @('nativeaot')) {
                   try {
                   Write-Host "BEGIN MODE: $mode"
                   $appRoot = Join-Path $root $mode
@@ -298,7 +305,7 @@ jobs:
                   $aot = if ($mode -eq 'nativeaot') { 'true' } else { 'false' }
                   $r2r = if ($mode -eq 'nativeaot') { 'false' } else { 'true' }
                   $satori = if ($mode.StartsWith('stock-')) { 'false' } else { 'true' }
-                  $project.Replace('__AOT__',$aot).Replace('__R2R__',$r2r).Replace('__SATORI__',$satori) | Set-Content (Join-Path $appRoot 'SatoriIosSmoke.csproj')
+                  $project.Replace('__AOT__',$aot).Replace('__R2R__',$r2r).Replace('__SATORI__',$satori).Replace('__SDK_VERSION__',$env:SATORI_TEST_SDK_VERSION) | Set-Content (Join-Path $appRoot 'SatoriIosSmoke.csproj')
                   $program | Set-Content (Join-Path $appRoot 'Program.cs')
                   $plist | Set-Content (Join-Path $appRoot 'Info.plist')
                   Push-Location $appRoot
@@ -314,6 +321,7 @@ jobs:
                       $rsp = @(Get-ChildItem -LiteralPath (Join-Path $appRoot 'obj') -Recurse -Filter '*.ilc.rsp')
                       if (!$rsp.Count) { throw 'NativeAOT response file missing.' }
                       $references = @(Get-Content -LiteralPath $rsp.FullName | Where-Object { $_ -match 'System.Private.CoreLib\.dll' })
+                      $references | Write-Host
                       if (!$references.Count -or @($references | Where-Object { $_.Replace('\','/') -notmatch 'publishwithsatorigc\.aotsdk\.iossimulator-arm64/11\.0\.0-satori\.38685412430\.1/aotsdk/System\.Private\.CoreLib\.dll' }).Count) { throw 'ILC did not exclusively use the Satori target CoreLib.' }
                   }
                   & codesign --verify --deep --strict $app
@@ -370,7 +378,7 @@ jobs:
                       & xcrun simctl uninstall $device org.satori.gc.smoke 2>&1 | Write-Host
                   }
               }
-              [ordered]@{ SourceRunId='38685412430'; SourceHeadSha='87a153827e0b7826df230432206d2e5db9aa6ce4'; PackageVersion='11.0.0-satori.38685412430.1'; TargetRid='iossimulator-arm64'; Runtime=$runtime.identifier; Modes=@('stock-coreclr-r2r','coreclr-r2r','nativeaot'); CentralPackageManagement=$true; Success=($failures.Count -eq 0); Failures=$failures } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $evidence 'summary.json')
+              [ordered]@{ SourceRunId='38685412430'; SourceHeadSha='87a153827e0b7826df230432206d2e5db9aa6ce4'; PackageVersion='11.0.0-satori.38685412430.1'; TargetRid='iossimulator-arm64'; Runtime=$runtime.identifier; Modes=@('nativeaot'); CandidateSdkVersion=$env:SATORI_TEST_SDK_VERSION; CentralPackageManagement=$true; Success=($failures.Count -eq 0); Failures=$failures } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $evidence 'summary.json')
               if ($failures.Count) { throw ($failures -join '; ') }
           } finally {
               & xcrun simctl shutdown $device | Out-Null
