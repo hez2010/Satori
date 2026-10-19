@@ -1,0 +1,401 @@
+name: Satori iOS package verification
+
+on:
+  push:
+    branches: [verify/ios-msbuild-20261020]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: satori-ios-package-verification
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  ios:
+    # The .NET 11 RC2 iOS workload requires the Xcode 27 image.
+    runs-on: ${{ 'xcode-27' }}
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+      NUGET_XMLDOC_MODE: skip
+      SATORI_SOURCE_RUN_ID: '39292159428'
+      SATORI_SOURCE_HEAD_SHA: 7fd81d47eb2a333bea505c702007796418111a9a
+      SATORI_TEST_SDK_VERSION: 11.0.0-satori.39292159428.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact source CI and artifact provenance
+        id: provenance
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $run = gh api "repos/hez2010/Satori/actions/runs/$env:SATORI_SOURCE_RUN_ID" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $run.head_sha -ne $env:SATORI_SOURCE_HEAD_SHA -or $run.run_attempt -ne 1 -or $run.status -ne 'completed' -or $run.conclusion -ne 'success' -or $run.path -ne '.github/workflows/satori.yaml' -or $run.repository.full_name -ne 'hez2010/Satori') { throw 'Source CI provenance mismatch.' }
+          $expectedNames = @('satori-packages-sdk','satori-packages-iossimulator-arm64','satori-packages-osx-arm64')
+          $inventory = gh api "repos/hez2010/Satori/actions/runs/$env:SATORI_SOURCE_RUN_ID/artifacts?per_page=100" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Artifact inventory failed.' }
+          $selected = @()
+          foreach ($name in $expectedNames) {
+              $artifact = @($inventory.artifacts | Where-Object name -EQ $name)
+              if ($artifact.Count -ne 1 -or $artifact[0].expired -or $artifact[0].workflow_run.head_sha -ne $run.head_sha -or [string]$artifact[0].workflow_run.id -ne $env:SATORI_SOURCE_RUN_ID -or !$artifact[0].digest.StartsWith('sha256:')) { throw 'Artifact provenance mismatch.' }
+              $selected += $artifact[0]
+          }
+          "artifact_ids=$($selected.id -join ',')" | Add-Content -LiteralPath $env:GITHUB_OUTPUT
+          $evidence = Join-Path $env:RUNNER_TEMP 'satori-ios-evidence'
+          [void][IO.Directory]::CreateDirectory($evidence)
+          [ordered]@{ SourceRunId=$env:SATORI_SOURCE_RUN_ID; SourceHeadSha=$run.head_sha; RunAttempt=$run.run_attempt; Workflow=$run.path; Repository=$run.repository.full_name; Artifacts=$selected } | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $evidence 'artifact-provenance.json')
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ steps.provenance.outputs.artifact_ids }}
+          run-id: ${{ env.SATORI_SOURCE_RUN_ID }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/satori-ios-feed
+          merge-multiple: true
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.100-rc.2.26504.105
+      - name: Install iOS workload and prepare isolated consumer
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'satori-ios-smoke'
+          [void][IO.Directory]::CreateDirectory($root)
+          Set-Location $root
+          '{"sdk":{"version":"11.0.100-rc.2.26504.105","rollForward":"disable","workloadVersion":"11.0.100-rc.2.26513.2"}}' | Set-Content global.json
+          $xcode = @(Get-ChildItem /Applications -Directory -Filter 'Xcode*.app' | ForEach-Object {
+              $application = $_
+              $versionText = & "$($application.FullName)/Contents/Developer/usr/bin/xcodebuild" -version
+              if ($LASTEXITCODE -eq 0 -and ($versionText -join "`n") -match 'Xcode (\d+(?:\.\d+)*)') { [pscustomobject]@{ Version=[version]$Matches[1]; Path="$($application.FullName)/Contents/Developer" } }
+          } | Where-Object { $_.Version.Major -eq 27 -and $_.Version.Minor -eq 0 } | Sort-Object Version -Descending)
+          if (!$xcode.Count) { throw 'Xcode 27.0 is required for the pinned RC2 workload.' }
+          & sudo xcode-select --switch $xcode[0].Path
+          if ($LASTEXITCODE -ne 0) { throw 'Xcode selection failed.' }
+          & xcodebuild -version
+          & dotnet --info
+          & dotnet workload install ios --source https://api.nuget.org/v3/index.json
+          if ($LASTEXITCODE -ne 0) { throw 'iOS workload installation failed.' }
+          & dotnet workload --version
+          $feed = Join-Path $env:RUNNER_TEMP 'satori-ios-feed'
+          $packages = @(Get-ChildItem -LiteralPath $feed -Filter '*.nupkg')
+          if ($packages.Count -ne 6) { throw 'Expected six packages from the pinned SDK, iOS and macOS artifacts.' }
+          $ids = @()
+          foreach ($package in $packages) {
+              $zip = [IO.Compression.ZipFile]::OpenRead($package.FullName)
+              try {
+                  $spec = @($zip.Entries | Where-Object FullName -Like '*.nuspec')
+                  if ($spec.Count -ne 1) { throw 'Unexpected nuspec count.' }
+                  $reader = [IO.StreamReader]::new($spec[0].Open())
+                  try { [xml]$manifest = $reader.ReadToEnd() } finally { $reader.Dispose() }
+                  if ($manifest.package.metadata.version -ne $env:SATORI_TEST_SDK_VERSION) { throw 'Unexpected Satori package version.' }
+                  $ids += [string]$manifest.package.metadata.id
+              } finally { $zip.Dispose() }
+          }
+          foreach ($id in @('PublishWithSatoriGC','PublishWithSatoriGC.Runtime.iossimulator-arm64','PublishWithSatoriGC.AotSdk.iossimulator-arm64','PublishWithSatoriGC.AotTools.osx-arm64')) { if ($id -notin $ids) { throw "Missing package: $id" } }
+          $escapedFeed = [Security.SecurityElement]::Escape($feed)
+          "<configuration><packageSources><clear/><add key=`"satori`" value=`"$escapedFeed`"/><add key=`"nuget.org`" value=`"https://api.nuget.org/v3/index.json`"/></packageSources><packageSourceMapping><packageSource key=`"satori`"><package pattern=`"PublishWithSatoriGC*`"/></packageSource><packageSource key=`"nuget.org`"><package pattern=`"*`"/></packageSource></packageSourceMapping></configuration>" | Set-Content NuGet.Config
+          '<Project><PropertyGroup><ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally><CentralPackageVersionOverrideEnabled>false</CentralPackageVersionOverrideEnabled><CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled></PropertyGroup></Project>' | Set-Content Directory.Packages.props
+          [void][IO.Directory]::CreateDirectory((Join-Path $env:RUNNER_TEMP 'satori-ios-evidence'))
+      - name: Build and run iOS CoreCLR ReadyToRun and NativeAOT with central package management
+        run: |
+          $project = @'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <Sdk Name="PublishWithSatoriGC" Version="__SDK_VERSION__" />
+            <PropertyGroup>
+              <TargetFramework>net11.0-ios</TargetFramework>
+              <RuntimeIdentifier>iossimulator-arm64</RuntimeIdentifier>
+              <OutputType>Exe</OutputType>
+              <AssemblyName>SatoriIosSmoke</AssemblyName>
+              <ApplicationId>org.satori.gc.smoke</ApplicationId>
+              <ApplicationTitle>Satori GC smoke test</ApplicationTitle>
+              <SupportedOSPlatformVersion>17.0</SupportedOSPlatformVersion>
+              <ImplicitUsings>enable</ImplicitUsings>
+              <Nullable>enable</Nullable>
+              <SelfContained>true</SelfContained>
+              <UseMonoRuntime>false</UseMonoRuntime>
+              <UseSatoriGC>__SATORI__</UseSatoriGC>
+              <_IsPublishing>true</_IsPublishing>
+              <PublishAot>__AOT__</PublishAot>
+              <PublishReadyToRun>__R2R__</PublishReadyToRun>
+              <BuildIpa>false</BuildIpa>
+              <EnableCodeSigning>true</EnableCodeSigning>
+              <CodesignKey>-</CodesignKey>
+              <StripSymbols>false</StripSymbols>
+              <SkipMauiWorkloadManifest>true</SkipMauiWorkloadManifest>
+            </PropertyGroup>
+          </Project>
+          '@
+          $program = @'
+          using Foundation;
+          using UIKit;
+          using System.Runtime.CompilerServices;
+          using System.Runtime.InteropServices;
+          using System.Text.Json;
+
+          Console.WriteLine("SATORI_SMOKE managed entry");
+          UIApplication.Main(args, null, typeof(AppDelegate));
+
+          [Register("AppDelegate")]
+          public sealed class AppDelegate : UIApplicationDelegate
+          {
+              public override bool FinishedLaunching(UIApplication application, NSDictionary? options)
+              {
+                  Smoke.Trace("finished-launching");
+                  _ = Task.Run(Smoke.Run);
+                  return true;
+              }
+              public override UISceneConfiguration GetConfiguration(UIApplication application, UISceneSession session, UISceneConnectionOptions options)
+                  => new("Default Configuration", session.Role) { DelegateType = typeof(SceneDelegate) };
+          }
+
+          [Register("SceneDelegate")]
+          public sealed class SceneDelegate : UIWindowSceneDelegate
+          {
+              public override UIWindow? Window { get; set; }
+              public override void WillConnect(UIScene scene, UISceneSession session, UISceneConnectionOptions options)
+              {
+                  if (scene is not UIWindowScene windowScene) return;
+                  var controller = new UIViewController();
+                  controller.View!.BackgroundColor = UIColor.White;
+                  Window = new UIWindow(windowScene) { RootViewController = controller };
+                  Window.MakeKeyAndVisible();
+              }
+          }
+
+          static class Smoke
+          {
+              static int finalized;
+              static int groups;
+              static bool satori;
+              static readonly string mode = Environment.GetEnvironmentVariable("SATORI_SMOKE_MODE") ?? "unknown";
+              static readonly string run = Environment.GetEnvironmentVariable("SATORI_SMOKE_RUN") ?? "unknown";
+              sealed class Finalizable { ~Finalizable() => Interlocked.Increment(ref finalized); }
+              sealed class Node { public Node? Next; public byte[] Data = new byte[256]; }
+              static void Require(bool condition, string message) { if (!condition) throw new Exception(message); }
+              [MethodImpl(MethodImplOptions.NoInlining)]
+              static WeakReference CreateGarbage() => new(new Finalizable());
+
+              public static void Run()
+              {
+                  string? error = null;
+                  Trace("worker-started");
+                  try
+                  {
+                      satori = GC.GetConfigurationVariables().TryGetValue("SatoriGC", out object? enabled) && enabled is true;
+                      Require(mode.StartsWith("stock-") ? !satori : satori, "Unexpected runtime GC selection");
+                      Require(RuntimeInformation.ProcessArchitecture == Architecture.Arm64, "Unexpected architecture");
+                      if (mode == "nativeaot") Require(!RuntimeFeature.IsDynamicCodeSupported, "NativeAOT was not selected");
+                      Require(!System.Runtime.GCSettings.IsServerGC, "Unsupported server GC was reported on iOS");
+                      groups++;
+                      Trace("configuration-passed");
+
+                      var roots = new Node[2048];
+                      for (int i = 0; i < roots.Length; i++) { roots[i] = new Node(); roots[i].Data[0] = (byte)i; }
+                      for (int i = 0; i < roots.Length; i++) roots[i].Next = roots[(i + 1) % roots.Length];
+                      GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, true, true);
+                      for (int i = 0; i < roots.Length; i++) Require(roots[i].Data[0] == (byte)i && ReferenceEquals(roots[i].Next, roots[(i + 1) % roots.Length]), "Live object graph was corrupted");
+                      groups++;
+                      Trace("live-graph-passed");
+
+                      var pinnedData = new byte[4096];
+                      pinnedData[2048] = 123;
+                      var pin = GCHandle.Alloc(pinnedData, GCHandleType.Pinned);
+                      try
+                      {
+                          nint before = pin.AddrOfPinnedObject();
+                          GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true, true);
+                          Require(pin.AddrOfPinnedObject() == before && pinnedData[2048] == 123, "Pinned object moved or changed");
+                      }
+                      finally { pin.Free(); }
+                      groups++;
+                      Trace("pinning-passed");
+
+                      WeakReference weak = CreateGarbage();
+                      GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+                      Require(finalized > 0 && !weak.IsAlive, "Finalization or weak references failed");
+                      groups++;
+                      Trace("finalization-passed");
+
+                      Task.WaitAll(Enumerable.Range(0, 4).Select(worker => Task.Run(() =>
+                      {
+                          for (int i = 0; i < 10000; i++)
+                          {
+                              var data = new byte[128 + i % 4096];
+                              data[^1] = (byte)worker;
+                              if (i % 2000 == 0) GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true);
+                              Require(data[^1] == (byte)worker, "Concurrent allocation was corrupted");
+                              GC.KeepAlive(data);
+                          }
+                      })).ToArray());
+                      GC.KeepAlive(roots);
+                      groups++;
+                  }
+                  catch (Exception exception) { error = exception.ToString(); }
+                  Trace("complete", true, error);
+              }
+
+              public static void Trace(string stage, bool complete = false, string? error = null)
+              {
+                  Console.WriteLine($"SATORI_SMOKE stage={stage} mode={mode} SatoriGC={satori} groups={groups} error={error}");
+                  string directory = NSFileManager.DefaultManager.GetUrls(NSSearchPathDirectory.CachesDirectory, NSSearchPathDomain.User)[0].Path!;
+                  string temporary = Path.Combine(directory, "satori-smoke.tmp");
+                  using (var stream = File.Create(temporary))
+                  using (var json = new Utf8JsonWriter(stream))
+                  {
+                  json.WriteStartObject();
+                  json.WriteString("Run", run); json.WriteString("Mode", mode);
+                  json.WriteString("Stage", stage); json.WriteBoolean("Completed", complete);
+                  json.WriteBoolean("Success", complete && error is null); json.WriteBoolean("SatoriGC", satori);
+                  json.WriteNumber("PassedGroups", groups);
+                  json.WriteString("Architecture", RuntimeInformation.ProcessArchitecture.ToString());
+                  json.WriteString("Runtime", RuntimeInformation.FrameworkDescription);
+                  json.WriteBoolean("DynamicCodeSupported", RuntimeFeature.IsDynamicCodeSupported);
+                  json.WriteBoolean("ServerGC", System.Runtime.GCSettings.IsServerGC);
+                  json.WriteString("Error", error);
+                  json.WriteEndObject(); json.Flush();
+                  }
+                  File.Move(temporary, Path.Combine(directory, "satori-smoke.json"), true);
+              }
+          }
+          '@
+          $plist = @'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>CFBundleIdentifier</key><string>org.satori.gc.smoke</string>
+          <key>CFBundleDisplayName</key><string>Satori GC smoke test</string>
+          <key>CFBundleVersion</key><string>1</string>
+          <key>CFBundleShortVersionString</key><string>1.0</string>
+          <key>LSRequiresIPhoneOS</key><true/>
+          <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
+          <key>UILaunchScreen</key><dict/>
+          <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
+          <key>UIApplicationSceneManifest</key><dict>
+            <key>UIApplicationSupportsMultipleScenes</key><false/>
+            <key>UISceneConfigurations</key><dict>
+              <key>UIWindowSceneSessionRoleApplication</key><array><dict>
+                <key>UISceneConfigurationName</key><string>Default Configuration</string>
+                <key>UISceneDelegateClassName</key><string>SceneDelegate</string>
+              </dict></array>
+            </dict>
+          </dict>
+          </dict></plist>
+          '@
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'satori-ios-smoke'
+          $evidence = Join-Path $env:RUNNER_TEMP 'satori-ios-evidence'
+          Set-Location $root
+          $runtimeInventory = & xcrun simctl list runtimes --json | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot list simulator runtimes.' }
+          $runtime = $runtimeInventory.runtimes | Where-Object { $_.isAvailable -and $_.identifier -match '\.iOS-' } | Sort-Object { [version]$_.version } -Descending | Select-Object -First 1
+          if (!$runtime) { throw 'No available iOS simulator runtime.' }
+          $device = (& xcrun simctl create "Satori-$env:GITHUB_RUN_ID" com.apple.CoreSimulator.SimDeviceType.iPhone-16 $runtime.identifier).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Simulator creation failed.' }
+          $env:SIMCTL_CHILD_SATORI_SMOKE_RUN = "$env:GITHUB_RUN_ID.$env:GITHUB_RUN_ATTEMPT"
+          $failures = @()
+          try {
+              & xcrun simctl boot $device
+              if ($LASTEXITCODE -ne 0) { throw 'Simulator boot failed.' }
+              & xcrun simctl bootstatus $device -b
+              if ($LASTEXITCODE -ne 0) { throw 'Simulator did not finish booting.' }
+              foreach ($mode in @('coreclr-r2r','nativeaot')) {
+                  try {
+                  Write-Host "BEGIN MODE: $mode"
+                  $appRoot = Join-Path $root $mode
+                  [void][IO.Directory]::CreateDirectory($appRoot)
+                  $aot = if ($mode -eq 'nativeaot') { 'true' } else { 'false' }
+                  $r2r = if ($mode -eq 'nativeaot') { 'false' } else { 'true' }
+                  $satori = if ($mode.StartsWith('stock-')) { 'false' } else { 'true' }
+                  $project.Replace('__AOT__',$aot).Replace('__R2R__',$r2r).Replace('__SATORI__',$satori).Replace('__SDK_VERSION__',$env:SATORI_TEST_SDK_VERSION) | Set-Content (Join-Path $appRoot 'SatoriIosSmoke.csproj')
+                  $program | Set-Content (Join-Path $appRoot 'Program.cs')
+                  $plist | Set-Content (Join-Path $appRoot 'Info.plist')
+                  Push-Location $appRoot
+                  try {
+                      # The iOS SDK rejects Publish for simulator RIDs. Its documented
+                      # _IsPublishing build path exercises the same NativeAOT pipeline.
+                      & dotnet build SatoriIosSmoke.csproj -c Release --disable-build-servers --verbosity normal
+                      if ($LASTEXITCODE -ne 0) { throw "iOS $mode build failed." }
+                  } finally { Pop-Location }
+                  $app = Join-Path $appRoot 'bin/Release/net11.0-ios/iossimulator-arm64/SatoriIosSmoke.app'
+                  if (!(Test-Path -LiteralPath $app)) { throw "App bundle missing: $mode" }
+                  if ($mode -eq 'nativeaot') {
+                      $rsp = @(Get-ChildItem -LiteralPath (Join-Path $appRoot 'obj') -Recurse -Filter '*.ilc.rsp')
+                      if (!$rsp.Count) { throw 'NativeAOT response file missing.' }
+                      $references = @(Get-Content -LiteralPath $rsp.FullName | Where-Object { $_ -match 'System.Private.CoreLib\.dll' })
+                      $references | Write-Host
+                      $expectedCoreLib = 'publishwithsatorigc.aotsdk.iossimulator-arm64/' + $env:SATORI_TEST_SDK_VERSION + '/aotsdk/System.Private.CoreLib.dll'
+                      if (!$references.Count -or @($references | Where-Object { !$_.Replace('\','/').Contains($expectedCoreLib) }).Count) { throw 'ILC did not exclusively use the Satori target CoreLib.' }
+                  }
+                  & codesign --verify --deep --strict $app
+                  if ($LASTEXITCODE -ne 0) { throw 'App signing verification failed.' }
+                  & xcrun simctl install $device $app
+                  if ($LASTEXITCODE -ne 0) { throw 'Simulator installation failed.' }
+                  $container = (& xcrun simctl get_app_container $device org.satori.gc.smoke data).Trim()
+                  if ($LASTEXITCODE -ne 0) { throw 'Cannot locate app data container.' }
+                  $reportPath = Join-Path $container 'Library/Caches/satori-smoke.json'
+                  $env:SIMCTL_CHILD_SATORI_SMOKE_MODE = $mode
+                  $start = [Diagnostics.ProcessStartInfo]::new('xcrun')
+                  $start.UseShellExecute = $false; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+                  foreach ($arg in @('simctl','launch','--terminate-running-process','--console',$device,'org.satori.gc.smoke')) { $start.ArgumentList.Add($arg) }
+                  $process = [Diagnostics.Process]::Start($start)
+                  $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
+                  try {
+                      $deadline = [DateTime]::UtcNow.AddMinutes(3)
+                      $result = $null
+                      $lastStage = ''
+                      while ([DateTime]::UtcNow -lt $deadline) {
+                          if (Test-Path -LiteralPath $reportPath) {
+                              try { $candidate = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json } catch { $candidate = $null }
+                              if ($candidate.Run -eq $env:SIMCTL_CHILD_SATORI_SMOKE_RUN -and $candidate.Mode -eq $mode) {
+                                  if ($candidate.Stage -ne $lastStage) { Write-Host "$mode stage=$($candidate.Stage) groups=$($candidate.PassedGroups) SatoriGC=$($candidate.SatoriGC)"; $lastStage=$candidate.Stage }
+                                  if ($candidate.Completed) { $result = $candidate; break }
+                              }
+                          }
+                          if ($process.HasExited) { break }
+                          Start-Sleep -Seconds 2
+                      }
+                      if (!$result) {
+                          Write-Host "No completion report: $mode; collecting process sample and simulator diagnostics."
+                          $appPids = @(& pgrep -x SatoriIosSmoke)
+                          foreach ($appPid in $appPids) { & sample $appPid 2 1 2>&1 | Select-Object -First 160 | Write-Host }
+                          & xcrun simctl spawn $device log show --last 3m --style compact --predicate 'process == "SatoriIosSmoke"' 2>&1 | Select-Object -Last 80 | Write-Host
+                      }
+                  } finally {
+                      & xcrun simctl terminate $device org.satori.gc.smoke | Out-Null
+                      if (!$process.WaitForExit(10000)) { $process.Kill(); $process.WaitForExit() }
+                      Write-Host $stdout.GetAwaiter().GetResult(); Write-Host $stderr.GetAwaiter().GetResult()
+                      $process.Dispose()
+                  }
+                  if (!$result) { throw "No fresh completion report from $mode app." }
+                  $result | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $evidence "$mode.json")
+                  $result | ConvertTo-Json -Depth 5 | Write-Host
+                  $expectedSatori = !$mode.StartsWith('stock-')
+                  if (!$result.Success -or $result.SatoriGC -ne $expectedSatori -or $result.PassedGroups -ne 5 -or $result.Architecture -ne 'Arm64') { throw "iOS $mode runtime verification failed." }
+                  & xcrun simctl uninstall $device org.satori.gc.smoke
+                  } catch {
+                      $message = $_.Exception.Message
+                      Write-Host "FAILED MODE: $mode - $message"
+                      $failures += "$mode - $message"
+                      if (!(Test-Path -LiteralPath (Join-Path $evidence "$mode.json"))) { [ordered]@{ Mode=$mode; Success=$false; Error=$message } | ConvertTo-Json | Set-Content (Join-Path $evidence "$mode.json") }
+                      & xcrun simctl uninstall $device org.satori.gc.smoke 2>&1 | Write-Host
+                  }
+              }
+              [ordered]@{ SourceRunId=$env:SATORI_SOURCE_RUN_ID; SourceHeadSha=$env:SATORI_SOURCE_HEAD_SHA; VerifierHeadSha=$env:GITHUB_SHA; PackageVersion=$env:SATORI_TEST_SDK_VERSION; TargetRid='iossimulator-arm64'; Runtime=$runtime.identifier; Modes=@('coreclr-r2r','nativeaot'); RebuiltNativeAotRuntime=$false; CentralPackageManagement=$true; Success=($failures.Count -eq 0); Failures=$failures } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $evidence 'summary.json')
+              if ($failures.Count) { throw ($failures -join '; ') }
+          } finally {
+              & xcrun simctl shutdown $device | Out-Null
+              & xcrun simctl delete $device | Out-Null
+          }
+      - name: Upload structured verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: satori-ios-verification
+          path: ${{ runner.temp }}/satori-ios-evidence/*.json
+          if-no-files-found: warn
+          retention-days: 7
