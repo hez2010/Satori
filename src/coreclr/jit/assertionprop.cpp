@@ -90,6 +90,9 @@ static Range GetRange(Compiler* comp, GenTree* tree, BasicBlock* block, ASSERT_V
 //
 static void optAssertionProp_HWIntrinsic(Compiler* comp, GenTreeHWIntrinsic* tree)
 {
+    // Only valid during global assertion prop, this relies on value numbers.
+    assert(comp->vnStore != nullptr);
+
     NamedIntrinsic intrinsic = tree->GetHWIntrinsicId();
 
     if (intrinsic != NI_Vector_ExtractMostSignificantBits)
@@ -3282,9 +3285,22 @@ GenTree* Compiler::optVNBasedFoldConstExpr(BasicBlock* block, GenTree* parent, G
             return nullptr;
         }
 
-        // Were able to optimize.
+        // We're able to optimize.
         conValTree->gtVNPair = vnPair;
-        return gtWrapWithSideEffects(conValTree, tree, GTF_SIDE_EFFECT, true);
+
+        bool ignoreRoot = true;
+        if (((tree->gtFlags & GTF_EXCEPT) != 0) && (tree->OperExceptions(this) != ExceptionSetFlags::None))
+        {
+            ValueNumPair operandsExcSet = vnStore->VNPForEmptyExcSet();
+            for (GenTree* operand : tree->Operands())
+            {
+                ValueNumPair operandVNP = operand->gtVNPair.BothDefined() ? operand->gtVNPair : vnStore->VNPForVoid();
+                operandsExcSet          = vnStore->VNPUnionExcSet(operandVNP, operandsExcSet);
+            }
+            ignoreRoot = vnStore->VNPExcIsSubset(operandsExcSet, vnStore->VNPExceptionSet(vnPair));
+        }
+
+        return gtWrapWithSideEffects(conValTree, tree, GTF_SIDE_EFFECT, ignoreRoot);
     }
     else
     {
@@ -5830,9 +5846,6 @@ GenTree* Compiler::optAssertionProp_Update(GenTree* newTree, GenTree* tree, Stat
             // to the next node in the tree. We will re-morph this entire statement in
             // optAssertionPropMain(). It will reset the gtPrev and gtNext links for all nodes.
             newTree->gtNext = tree->gtNext;
-
-            // Old tree should not be referenced anymore.
-            DEBUG_DESTROY_NODE(tree);
         }
     }
 
@@ -5918,7 +5931,11 @@ GenTree* Compiler::optAssertionProp(ASSERT_VALARG_TP assertions, GenTree* tree, 
 
 #if defined(FEATURE_HW_INTRINSICS)
         case GT_HWINTRINSIC:
-            optAssertionProp_HWIntrinsic(this, tree->AsHWIntrinsic());
+            // This optimization needs value numbers, which are not available during local assertion prop.
+            if (!optLocalAssertionProp)
+            {
+                optAssertionProp_HWIntrinsic(this, tree->AsHWIntrinsic());
+            }
             return nullptr;
 #endif // FEATURE_HW_INTRINSICS
 

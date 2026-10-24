@@ -1112,6 +1112,31 @@ PCODE MethodDesc::GetNativeCode()
     return GetStableEntryPoint();
 }
 
+#ifndef DACCESS_COMPILE
+PCODE MethodDesc::GetNativeCodeVolatile()
+{
+    WRAPPER_NO_CONTRACT;
+    SUPPORTS_DAC;
+    _ASSERTE(!IsDefaultInterfaceMethod() || HasNativeCodeSlot());
+    if (HasNativeCodeSlot())
+    {
+        PTR_PCODE ppCode = GetAddrOfNativeCodeSlot();
+        PCODE pCode = VolatileLoad(ppCode);
+
+#ifdef TARGET_ARM
+        if (pCode != (PCODE)NULL)
+            pCode |= THUMB_CODE;
+#endif
+        return pCode;
+    }
+
+    if (!HasStableEntryPoint() || HasPrecode())
+        return (PCODE)NULL;
+
+    return VolatileLoad(GetAddrOfSlot());
+}
+#endif
+
 PCODE MethodDesc::GetNativeCodeAnyVersion()
 {
     WRAPPER_NO_CONTRACT;
@@ -1522,6 +1547,16 @@ DWORD MethodDesc::GetAttrs() const
         _ASSERTE(!"If this ever fires, then this method should return HRESULT");
         return 0;
     }
+
+    if (IsReturnDroppingThunk())
+    {
+        // A return-dropping thunk is synthesized by the runtime and always has an implementation -
+        // it calls the ordinary async variant virtually and drops the result.
+        // The metadata method that the thunk is derived from may be abstract (i.e. when the covariant
+        // override that needs the thunk is abstract), but the thunk itself never is.
+        dwAttributes &= ~mdAbstract;
+    }
+
     return dwAttributes;
 }
 

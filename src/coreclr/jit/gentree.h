@@ -1642,7 +1642,7 @@ public:
     bool isEmbeddedMaskingCompatible(Compiler*  comp,
                                      unsigned   tgtMaskSize,
                                      var_types& tgtSimdBaseType,
-                                     size_t*    broadcastOpIndex = nullptr) const;
+                                     size_t*    broadcastOpIndex = nullptr);
 #endif // TARGET_XARCH
     bool isEmbeddedMaskingCompatible() const;
 #else
@@ -7433,6 +7433,12 @@ struct GenTreeVecCon : public GenTree
     bool IsNaN(var_types simdBaseType) const;
 
     bool IsNegativeZero(var_types simdBaseType) const;
+
+    bool ContainsNaN(var_types simdBaseType) const;
+
+    bool ContainsNegativeZero(var_types simdBaseType) const;
+
+    bool ContainsPositiveZero(var_types simdBaseType) const;
 
     bool IsZero() const
     {
