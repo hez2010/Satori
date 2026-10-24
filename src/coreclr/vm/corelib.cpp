@@ -8,6 +8,9 @@
 //
 #include "common.h"
 #include "ecall.h"
+#ifdef FEATURE_UNITY_EMBEDDING_INTERFACE
+#include "unity/embedding.h"
+#endif
 
 //
 // Headers for all ECall entrypoints

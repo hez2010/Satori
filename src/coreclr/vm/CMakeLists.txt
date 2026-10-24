@@ -1045,6 +1045,10 @@ if(CLR_CMAKE_TARGET_ARCH_I386)
     )
 endif()
 
+if(FEATURE_UNITY_EMBEDDING_INTERFACE)
+    list(APPEND VM_SOURCES_WKS unity/embedding.cpp unity/invoke.cpp unity/liveness.cpp unity/profiler.cpp)
+endif()
+
 convert_to_absolute_path(VM_SOURCES_WKS ${VM_SOURCES_WKS})
 convert_to_absolute_path(VM_SOURCES_WKS_ARCH_ASM ${VM_SOURCES_WKS_ARCH_ASM})
 convert_to_absolute_path(VM_SOURCES_DAC ${VM_SOURCES_DAC})

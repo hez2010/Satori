@@ -1386,6 +1386,11 @@ DEFINE_FIELD_U(_generationInfo2, GCMemoryInfoData, generationInfo2)
 DEFINE_FIELD_U(_generationInfo3, GCMemoryInfoData, generationInfo3)
 DEFINE_FIELD_U(_generationInfo4, GCMemoryInfoData, generationInfo4)
 
+#ifdef FEATURE_UNITY_EMBEDDING_INTERFACE
+DEFINE_CLASS(UNITY_INVOCATION, CompilerServices, UnityInvocation)
+DEFINE_METHOD(UNITY_INVOCATION, INVOKE, Invoke, NoSig)
+#endif
+
 #undef DEFINE_CLASS
 #undef DEFINE_METHOD
 #undef DEFINE_FIELD

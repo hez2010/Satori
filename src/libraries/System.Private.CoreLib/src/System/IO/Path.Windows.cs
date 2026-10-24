@@ -44,6 +44,9 @@ namespace System.IO
         public static string GetFullPath(string path)
         {
             ArgumentNullException.ThrowIfNull(path);
+#if FEATURE_UNITY_EMBEDDING_INTERFACE
+            path = Unity.PathRemapper.Remap(path);
+#endif
 
             // If the path would normalize to string empty, we'll consider it empty
             if (PathInternal.IsEffectivelyEmpty(path.AsSpan()))

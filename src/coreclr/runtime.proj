@@ -20,6 +20,7 @@
           BeforeTargets="Build">
     <ItemGroup>
       <_CMakeArgs Include="$(CMakeArgs)" />
+      <_CMakeArgs Include="-DFEATURE_UNITY_EMBEDDING_INTERFACE=$(FeatureUnityEmbeddingInterface)" />
       <_CoreClrBuildArg Include="@(_CMakeArgs->'-cmakeargs &quot;%(Identity)&quot;')" />
       <_CoreClrBuildArg Condition="'$(TargetArchitecture)' != ''" Include="-$(TargetArchitecture)" />
       <_CoreClrBuildArg Include="-$(Configuration.ToLower())" />

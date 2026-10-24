@@ -1,0 +1,5 @@
+project(UnityLivenessNative)
+include("${CLR_INTEROP_TEST_ROOT}/Interop.cmake")
+add_library(UnityLivenessNative SHARED UnityLivenessNative.cpp)
+target_link_libraries(UnityLivenessNative PRIVATE ${LINK_LIBRARIES_ADDITIONAL})
+install(TARGETS UnityLivenessNative DESTINATION bin)

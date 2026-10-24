@@ -6,6 +6,9 @@
 // ---------------------------------------------------------------------------
 
 #include "common.h"
+#ifdef FEATURE_UNITY_EMBEDDING_INTERFACE
+#include "unity/embedding.h"
+#endif
 #include "eepolicy.h"
 #include "corhost.h"
 #include "dbginterface.h"
@@ -838,6 +841,9 @@ int NOINLINE EEPolicy::HandleFatalError(UINT exitCode, UINT_PTR address, LPCWSTR
         CONTRACT_VIOLATION(GCViolation | ModeViolation | FaultNotFatal | TakesLockViolation);
 
 
+#ifdef FEATURE_UNITY_EMBEDDING_INTERFACE
+        UnityEmbedding::NotifyFatalError(pExceptionInfo);
+#endif
         // Setting g_fFatalErrorOccurredOnGCThread allows code to avoid attempting to make GC mode transitions which could
         // block indefinitely if the fatal error occurred during the GC.
         if (IsGCSpecialThread() && GCHeapUtilities::IsGCInProgress())

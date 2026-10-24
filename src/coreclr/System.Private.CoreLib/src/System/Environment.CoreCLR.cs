@@ -24,7 +24,12 @@ namespace System
         private static partial void _Exit(int exitCode);
 
         [DoesNotReturn]
-        public static void Exit(int exitCode) => _Exit(exitCode);
+        public static void Exit(int exitCode) =>
+#if FEATURE_UNITY_EMBEDDING_INTERFACE
+            throw new PlatformNotSupportedException("Environment.Exit is not supported in Unity. Use UnityEngine.Application.Quit instead.");
+#else
+            _Exit(exitCode);
+#endif
 
         public static extern int ExitCode
         {

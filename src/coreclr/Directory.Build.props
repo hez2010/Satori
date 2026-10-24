@@ -14,6 +14,8 @@
   <Import Project="..\..\Directory.Build.props" />
 
   <PropertyGroup>
+    <FeatureUnityEmbeddingInterface Condition="'$(FeatureUnityEmbeddingInterface)' == '' and ('$(TargetArchitecture)' == 'x64' or '$(TargetArchitecture)' == 'arm64') and ('$(TargetOS)' == 'windows' or '$(TargetOS)' == 'linux' or '$(TargetOS)' == 'osx')">true</FeatureUnityEmbeddingInterface>
+    <FeatureUnityEmbeddingInterface Condition="'$(FeatureUnityEmbeddingInterface)' == ''">false</FeatureUnityEmbeddingInterface>
     <IsNativeAotProject Condition="$(MSBuildProjectDirectory.Contains('nativeaot'))">true</IsNativeAotProject>
     <BaseIntermediateOutputPath Condition="'$(IsNativeAotProject)' != 'true'">$([MSBuild]::NormalizeDirectory('$(ArtifactsObjDir)', 'coreclr', '$(MSBuildProjectName)'))</BaseIntermediateOutputPath>
     <BaseIntermediateOutputPath Condition="'$(IsNativeAotProject)' == 'true'">$([MSBuild]::NormalizeDirectory('$(ArtifactsObjDir)', 'coreclr', 'nativeaot', '$(MSBuildProjectName)'))</BaseIntermediateOutputPath>

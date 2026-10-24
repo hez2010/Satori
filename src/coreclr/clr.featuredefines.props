@@ -32,6 +32,7 @@
     </PropertyGroup>
 
     <PropertyGroup>
+        <DefineConstants Condition="'$(FeatureUnityEmbeddingInterface)' == 'true'">$(DefineConstants);FEATURE_UNITY_EMBEDDING_INTERFACE</DefineConstants>
         <DefineConstants Condition="'$(FeatureJavaMarshal)' == 'true'">$(DefineConstants);FEATURE_JAVAMARSHAL</DefineConstants>
         <DefineConstants Condition="'$(FeatureComWrappers)' == 'true'">$(DefineConstants);FEATURE_COMWRAPPERS</DefineConstants>
         <DefineConstants Condition="'$(FeatureCominterop)' == 'true'">$(DefineConstants);FEATURE_COMINTEROP</DefineConstants>

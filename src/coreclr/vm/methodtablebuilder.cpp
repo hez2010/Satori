@@ -2023,6 +2023,16 @@ MethodTableBuilder::BuildMethodTableThrowing(
     }
 #endif // FEATURE_OBJCMARSHAL
 
+#ifdef FEATURE_UNITY_EMBEDDING_INTERFACE
+    if (!IsValueClass() && !IsInterface() && !IsDelegate() &&
+        ((HasParent() && GetParentMethodTable()->IsUnityAssetGCFilterType()) ||
+         pModule->GetMDImport()->GetCustomAttributeByName(bmtInternal->pType->GetTypeDefToken(),
+             "UnityEngine.AssetGCFilterTypeAttribute", nullptr, nullptr) == S_OK))
+    {
+        pMT->SetUnityAssetGCFilterType();
+    }
+#endif
+
     // Grow the typedef ridmap in advance as we can't afford to
     // fail once we set the resolve bit
     pModule->EnsureTypeDefCanBeStored(bmtInternal->pType->GetTypeDefToken());

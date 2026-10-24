@@ -243,6 +243,8 @@
     <Compile Include="$(BclSourcesRoot)\System\TypedReference.CoreCLR.cs" />
     <Compile Include="$(BclSourcesRoot)\System\TypeLoadException.CoreCLR.cs" />
     <Compile Include="$(BclSourcesRoot)\System\ValueType.cs" />
+    <Compile Include="$(BclSourcesRoot)\Unity\PathRemapper.cs" Condition="'$(FeatureUnityEmbeddingInterface)' == 'true'" />
+    <Compile Include="$(BclSourcesRoot)\Unity\UnityInvocation.cs" Condition="'$(FeatureUnityEmbeddingInterface)' == 'true'" />
     <Compile Include="$(CommonPath)System\Collections\Generic\ArrayBuilder.cs">
       <Link>Common\System\Collections\Generic\ArrayBuilder.cs</Link>
     </Compile>

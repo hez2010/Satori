@@ -321,6 +321,12 @@ FCFuncStart(gJitInfoFuncs)
     FCFuncElement("GetCompilationTimeInTicks", GetCompilationTimeInTicks)
 FCFuncEnd()
 
+#ifdef FEATURE_UNITY_EMBEDDING_INTERFACE
+FCFuncStart(gUnityPathRemapperFuncs)
+    FCFuncElement("InvokeNativeRemapper", UnityEmbedding::InvokeNativeRemapper)
+FCFuncEnd()
+#endif
+
 FCFuncStart(gMonitorFuncs)
     FCFuncElement("IsEnteredNative", ObjectNative::IsLockHeld)
 
@@ -398,6 +404,9 @@ FCClassElement("MathF", "System", gMathFFuncs)
 FCClassElement("MetadataImport", "System.Reflection", gMetaDataImport)
 FCClassElement("MethodTable", "System.Runtime.CompilerServices", gMethodTableFuncs)
 FCClassElement("Monitor", "System.Threading", gMonitorFuncs)
+#ifdef FEATURE_UNITY_EMBEDDING_INTERFACE
+FCClassElement("PathRemapper", "Unity", gUnityPathRemapperFuncs)
+#endif
 
 FCClassElement("RuntimeAssembly", "System.Reflection", gRuntimeAssemblyFuncs)
 FCClassElement("RuntimeFieldHandle", "System", gCOMFieldHandleNewFuncs)

@@ -32,6 +32,13 @@ namespace System.Runtime.Loader
 
         private static Dictionary<long, WeakReference<AssemblyLoadContext>>? s_allContexts;
         private static long s_nextId;
+#if FEATURE_UNITY_EMBEDDING_INTERFACE
+        // Unity installs the resolver through reflection.
+        private static Func<Assembly, string, string>? s_ResolveAssemblyLocationOverride;
+
+        internal static string ResolveAssemblyLocation(Assembly assembly, string location) =>
+            s_ResolveAssemblyLocationOverride is { } resolve ? resolve(assembly, location) : location;
+#endif
 
         [MemberNotNull(nameof(s_allContexts))]
         private static Dictionary<long, WeakReference<AssemblyLoadContext>> AllContexts =>

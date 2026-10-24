@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RequiresProcessIsolation>true</RequiresProcessIsolation>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DisableProjectBuild Condition="'$(RuntimeFlavor)' == 'Mono' or '$(NativeAot)' == 'true'">true</DisableProjectBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="UnityEmbedding.cs" />
+    <CMakeProjectReference Include="CMakeLists.txt" />
+  </ItemGroup>
+</Project>

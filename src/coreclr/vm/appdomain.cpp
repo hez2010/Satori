@@ -3902,8 +3902,8 @@ void AppDomain::EnumStaticGCRefs(promote_func* fn, ScanContext* sc)
     CONTRACT_END;
 
     _ASSERTE(GCHeapUtilities::IsGCInProgress() &&
-             GCHeapUtilities::IsServerHeap()   &&
-            (IsGCSpecialThread() || !GetThread()->PreemptiveGCDisabled()));
+             (ThreadSuspend::SysIsSuspended() ||
+              (GCHeapUtilities::IsServerHeap() && (IsGCSpecialThread() || !GetThread()->PreemptiveGCDisabled()))));
 
     if (m_pPinnedHeapHandleTable != nullptr)
     {

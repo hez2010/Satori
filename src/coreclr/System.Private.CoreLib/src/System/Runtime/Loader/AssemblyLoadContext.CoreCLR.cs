@@ -29,7 +29,15 @@ namespace System.Runtime.Loader
 
         [RequiresUnreferencedCode("Types and members the loaded assembly depends on might be removed")]
         [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "AssemblyNative_LoadFromPath", StringMarshalling = StringMarshalling.Utf16)]
+#if FEATURE_UNITY_EMBEDDING_INTERFACE
+        private static partial void LoadFromPath_Internal(IntPtr ptrNativeAssemblyBinder, string? ilPath, string? niPath, ObjectHandleOnStack retAssembly);
+
+        [RequiresUnreferencedCode("Types and members the loaded assembly depends on might be removed")]
+        private static void LoadFromPath(IntPtr ptrNativeAssemblyBinder, string? ilPath, string? niPath, ObjectHandleOnStack retAssembly) =>
+            LoadFromPath_Internal(ptrNativeAssemblyBinder, Unity.PathRemapper.Remap(ilPath), Unity.PathRemapper.Remap(niPath), retAssembly);
+#else
         private static partial void LoadFromPath(IntPtr ptrNativeAssemblyBinder, string? ilPath, string? niPath, ObjectHandleOnStack retAssembly);
+#endif
 
         internal static Assembly[] GetLoadedAssemblies()
         {

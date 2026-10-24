@@ -1728,7 +1728,11 @@ public:
         return pMTParent == NULL ? 0 : pMTParent->GetNumVirtuals();
     }
 
+#ifdef FEATURE_UNITY_EMBEDDING_INTERFACE
+    #define SIZEOF__MethodTable_ (0x10 + (7 INDEBUG(+1)) * TARGET_POINTER_SIZE)
+#else
     #define SIZEOF__MethodTable_ (0x10 + (6 INDEBUG(+1)) * TARGET_POINTER_SIZE)
+#endif
 
     static inline DWORD GetVtableOffset()
     {
@@ -2550,6 +2554,14 @@ public:
         WRAPPER_NO_CONTRACT;
         return HasFinalizer();
     }
+
+#ifdef FEATURE_UNITY_EMBEDDING_INTERFACE
+    bool IsUnityAssetGCFilterType() const { return GetFlag(enum_flag_IsUnityAssetGCFilterType) != 0; }
+    void SetUnityAssetGCFilterType() { SetFlag(enum_flag_IsUnityAssetGCFilterType); }
+
+    static int GetUnityUserDataOffset() { return offsetof(MethodTable, m_unityUserData); }
+    void SetUnityUserData(void* value) { m_unityUserData = value; }
+#endif
 
     void SetHasFinalizer()
     {
@@ -3752,7 +3764,9 @@ private:
 
         enum_flag_HasFinalizer                = 0x00100000, // instances require finalization. GC depends on this bit.
         enum_flag_Collectible                 = 0x00200000, // GC depends on this bit.
-        // enum_flag_unused                   = 0x00400000,
+#ifdef FEATURE_UNITY_EMBEDDING_INTERFACE
+        enum_flag_IsUnityAssetGCFilterType    = 0x00400000,
+#endif
 
 #ifdef FEATURE_64BIT_ALIGNMENT
         enum_flag_RequiresAlign8              = 0x00800000, // Type requires 8-byte alignment (only set on platforms that require this and don't get it implicitly)
@@ -3952,6 +3966,11 @@ private:
         PTR_InterfaceInfo   m_pInterfaceMap;
         TADDR               m_encodedNullableUnboxData; // Used for Nullable<T> to represent the offset to the value field, and the size of the value field
     };
+
+#ifdef FEATURE_UNITY_EMBEDDING_INTERFACE
+private:
+    void* m_unityUserData;
+#endif
 
     // VTable slots go here
 

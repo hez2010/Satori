@@ -518,7 +518,11 @@ namespace System.Reflection
                 RuntimeAssembly runtimeAssembly = this;
                 GetLocation(new QCallAssembly(ref runtimeAssembly), new StringHandleOnStack(ref location));
 
+#if FEATURE_UNITY_EMBEDDING_INTERFACE
+                return AssemblyLoadContext.ResolveAssemblyLocation(this, location!);
+#else
                 return location!;
+#endif
             }
         }
 
