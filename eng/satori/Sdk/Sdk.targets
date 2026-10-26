@@ -1,0 +1,32 @@
+<Project>
+  <PropertyGroup>
+    <!-- This describes the SDK process, not the application's target architecture. -->
+    <SatoriHostRuntimeIdentifier Condition="'$(SatoriHostRuntimeIdentifier)' == ''">$(NETCoreSdkRuntimeIdentifier)</SatoriHostRuntimeIdentifier>
+  </PropertyGroup>
+
+  <!-- SDK imports participate in the first restore. Adding these references from
+       NuGet build/buildTransitive imports would be excluded by NuGet during restore. -->
+  <ItemGroup Condition="'$(UseSatoriGC)' == 'true'">
+    <_SatoriRequestedRuntime Include="$(RuntimeIdentifier);$(RuntimeIdentifiers)" />
+    <_SatoriRestoreRuntime Include="@(_SatoriRequestedRuntime)" KeepDuplicates="false" />
+    <_SatoriPackageReference Include="@(_SatoriRestoreRuntime->'PublishWithSatoriGC.Runtime.%(Identity)')"
+                      PrivateAssets="all" IncludeAssets="build"
+                      Condition="'$(PublishAot)' != 'true'" />
+    <_SatoriPackageReference Include="@(_SatoriRestoreRuntime->'PublishWithSatoriGC.AotSdk.%(Identity)')"
+                      PrivateAssets="all" IncludeAssets="build"
+                      Condition="'$(PublishAot)' == 'true'" />
+    <_SatoriPackageReference Include="PublishWithSatoriGC.AotTools.$(SatoriHostRuntimeIdentifier)"
+                      PrivateAssets="all" IncludeAssets="build"
+                      Condition="('$(PublishAot)' == 'true' or '$(PublishReadyToRun)' == 'true') and '@(_SatoriRestoreRuntime)' != ''" />
+    <PackageReference Include="@(_SatoriPackageReference)">
+      <Version Condition="'$(ManagePackageVersionsCentrally)' != 'true'">[$(SatoriPackageVersion)]</Version>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseSatoriGC)' == 'true' and '$(ManagePackageVersionsCentrally)' == 'true'">
+    <!-- Internal packs must match this SDK, including when overrides are disabled. -->
+    <PackageVersion Remove="@(_SatoriPackageReference)" />
+    <PackageVersion Include="@(_SatoriPackageReference)" Version="[$(SatoriPackageVersion)]" />
+  </ItemGroup>
+
+  <Import Project="$(MSBuildThisFileDirectory)PublishWithSatoriGC.targets" />
+</Project>
