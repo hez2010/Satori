@@ -1,0 +1,43 @@
+<Project>
+  <PropertyGroup>
+    <_SatoriIs32BitTarget Condition="'$(PlatformTarget)' == 'x86' or '$(PlatformTarget)' == 'ARM' or $([System.Text.RegularExpressions.Regex]::IsMatch('$(RuntimeIdentifier)', '-(x86|arm|armv6|armel)(-aot)?$'))">true</_SatoriIs32BitTarget>
+    <_SatoriGCEnabled Condition="'$(UseSatoriGC)' == 'true' and '$(_SatoriIs32BitTarget)' != 'true'">true</_SatoriGCEnabled>
+    <_SatoriUsesAppRelativeRuntime Condition="'$(_SatoriGCEnabled)' == 'true' and '$(PublishAot)' != 'true' and '$(SelfContained)' != 'true' and '$(AppHostRelativeDotNet)' != ''">true</_SatoriUsesAppRelativeRuntime>
+    <!-- This describes the SDK process, not the application's target architecture. -->
+    <SatoriHostRuntimeIdentifier Condition="'$(SatoriHostRuntimeIdentifier)' == ''">$(NETCoreSdkRuntimeIdentifier)</SatoriHostRuntimeIdentifier>
+  </PropertyGroup>
+
+  <!-- SDK imports participate in the first restore. Adding these references from
+       NuGet build/buildTransitive imports would be excluded by NuGet during restore. -->
+  <ItemGroup Condition="'$(_SatoriGCEnabled)' == 'true'">
+    <_SatoriRequestedRuntime Include="$(RuntimeIdentifier)" Condition="'$(RuntimeIdentifier)' != ''" />
+    <_SatoriRequestedRuntime Include="$(RuntimeIdentifiers)" Condition="'$(RuntimeIdentifier)' == ''" />
+    <_SatoriRestoreRuntime Include="@(_SatoriRequestedRuntime->Distinct())"
+                          Exclude="*-x86;*-arm;*-armv6;*-armel;*-x86-aot;*-arm-aot;*-armv6-aot;*-armel-aot" />
+    <_Satori32BitRuntime Include="@(_SatoriRequestedRuntime)" Exclude="@(_SatoriRestoreRuntime)" />
+    <_SatoriPackageReference Include="@(_SatoriRestoreRuntime->'PublishWithSatoriGC.Runtime.%(Identity)')"
+                      PrivateAssets="all" IncludeAssets="build"
+                      Condition="'$(PublishAot)' != 'true' and '$(_SatoriUsesAppRelativeRuntime)' != 'true'" />
+    <_SatoriPackageReference Include="@(_SatoriRestoreRuntime->'PublishWithSatoriGC.AotSdk.%(Identity)')"
+                      PrivateAssets="all" IncludeAssets="build"
+                      Condition="'$(PublishAot)' == 'true'" />
+    <_SatoriPackageReference Include="PublishWithSatoriGC.AotTools.$(SatoriHostRuntimeIdentifier)"
+                      PrivateAssets="all" IncludeAssets="build"
+                      Condition="('$(PublishAot)' == 'true' or '$(PublishReadyToRun)' == 'true') and '@(_SatoriRestoreRuntime)' != ''" />
+    <PackageReference Include="@(_SatoriPackageReference)">
+      <Version Condition="'$(ManagePackageVersionsCentrally)' != 'true'">[$(SatoriPackageVersion)]</Version>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup Condition="'$(_SatoriGCEnabled)' == 'true' and '$(ManagePackageVersionsCentrally)' == 'true'">
+    <!-- Internal packs must match this SDK, including when overrides are disabled. -->
+    <PackageVersion Remove="@(_SatoriPackageReference)" />
+    <PackageVersion Include="@(_SatoriPackageReference)" Version="[$(SatoriPackageVersion)]" />
+  </ItemGroup>
+
+  <Target Name="_WarnSatoriUnsupportedArchitecture" BeforeTargets="CollectPackageReferences;PrepareForBuild;PrepareForPublish"
+          Condition="'$(UseSatoriGC)' == 'true' and ('$(_SatoriIs32BitTarget)' == 'true' or '@(_Satori32BitRuntime)' != '')">
+    <Warning Code="SATORI001" Text="Satori GC does not support 32-bit targets; those targets use the standard .NET runtime and tools." />
+  </Target>
+
+  <Import Project="$(MSBuildThisFileDirectory)PublishWithSatoriGC.targets" />
+</Project>
