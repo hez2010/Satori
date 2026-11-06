@@ -303,6 +303,36 @@ HelperCanary * Debugger::GetCanary()
     return g_pRCThread->GetCanary();
 }
 
+void Debugger::ReleaseDebuggerLockAndBlockForShutdownIfNotSpecialThread(Thread *pThread)
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        MODE_ANY;
+        GC_NOTRIGGER;
+        PRECONDITION(m_mutex.OwnedByCurrentThread());
+    }
+    CONTRACTL_END;
+
+    if ((t_ThreadType & (ThreadType_Finalizer|ThreadType_DbgHelper|ThreadType_Shutdown|ThreadType_GC)) == 0)
+    {
+        m_mutex.Leave();
+
+        // Debugger event sending acquires the ThreadStore lock before the debugger lock.
+        // Since this thread is about to block forever, release the ThreadStore lock explicitly.
+        if (ThreadStore::HoldingThreadStore(pThread))
+        {
+            ThreadSuspend::UnlockThreadStore();
+        }
+
+        GCX_ASSERT_PREEMP();
+
+        WaitForEndOfShutdown();
+        __SwitchToThread(INFINITE, CALLER_LIMITS_SPINNING);
+        _ASSERTE(!"Can not reach here");
+    }
+}
+
 // IMPORTANT!!!!!
 // Do not call Lock and Unlock directly. Because you might not unlock
 // if exception takes place. Use DebuggerLockHolder instead!!!
@@ -372,7 +402,7 @@ void Debugger::DoNotCallDirectlyPrivateLock(void)
         // We need to be in preemptive to block for shutdown, so we don't do this block in Coop mode.
         // Fortunately, it's safe to take this lock in coop mode because we know the thread can't block
         // on anything interesting because we're in a GC-forbid region (see crst flags).
-        m_mutex.ReleaseAndBlockForShutdownIfNotSpecialThread();
+        ReleaseDebuggerLockAndBlockForShutdownIfNotSpecialThread(pThread);
     }
 
 
@@ -4805,6 +4835,14 @@ HRESULT Debugger::MapPatchToDJI(DebuggerControllerPatch *dcp, DebuggerJitInfo *d
     // We shouldn't have been asked to map an already bound patch
     _ASSERTE( !dcp->IsBound() );
 
+#ifndef FEATURE_DYNAMIC_CODE_COMPILED
+    if (ExecutionManager::IsReadyToRunCode(dac_cast<PCODE>(djiTo->m_addrOfCode)))
+    {
+        // Leave deferred patches unbound because this configuration cannot patch R2R code.
+        return S_OK;
+    }
+#endif
+
     // If the patch has no DJI then we're doing a UnbindFunctionPatches/RebindFunctionPatches.  Either
     // way, we simply want the most recent version.  In the absence of EnC we should have djiCur == djiTo.
     DebuggerJitInfo *djiCur = dcp->HasDJI() ? dcp->GetDJI() : djiTo;
@@ -4846,7 +4884,12 @@ HRESULT Debugger::MapPatchToDJI(DebuggerControllerPatch *dcp, DebuggerJitInfo *d
             LOG((LF_CORDB, LL_EVERYTHING, "D::MPTDJI trying to bind patch... could be problem\n"));
             if (DebuggerController::BindPatch(dcp, djiTo->m_nativeCodeVersion.GetMethodDesc(), NULL))
             {
-                DebuggerController::ActivatePatch(dcp);
+                if (!DebuggerController::ActivatePatch(dcp))
+                {
+                    DebuggerController::GetPatchTable()->UnbindPatch(dcp);
+                    return CORDBG_E_CODE_NOT_AVAILABLE;
+                }
+
                 LOG((LF_CORDB, LL_INFO1000, "D::MPTDJI Binding went fine!\n" ));
                 return S_OK;
             }
@@ -8893,6 +8936,10 @@ void Debugger::SendCreateThreadAtInterpreterEntry(Thread *pRuntimeThread)
 
     if (pRuntimeThread->HasThreadStateNC(Thread::TSNC_DebuggerThreadStartSent))
         return;
+
+#ifndef FEATURE_DYNAMIC_CODE_COMPILED
+    DebuggerController::CancelOutstandingThreadStarter(pRuntimeThread);
+#endif
 
     {
         GCX_PREEMP();

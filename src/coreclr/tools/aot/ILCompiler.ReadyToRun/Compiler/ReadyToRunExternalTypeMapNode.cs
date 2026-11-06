@@ -11,7 +11,12 @@ using Internal.TypeSystem;
 
 namespace ILCompiler.ReadyToRun
 {
-    internal class ReadyToRunExternalTypeMapNode(ModuleDesc triggeringModule, TypeDesc group, TypeMapMetadata.IExternalTypeMap map, ImportReferenceProvider importProvider) : SortableDependencyNode, IExternalTypeMapNode
+    internal class ReadyToRunExternalTypeMapNode(
+        ModuleDesc triggeringModule,
+        TypeDesc group,
+        TypeMapMetadata.IExternalTypeMap map,
+        ImportReferenceProvider importProvider,
+        bool requiresRuntimeProcessing) : SortableDependencyNode, IExternalTypeMapNode
     {
         public TypeDesc TypeMapGroup => group;
 
@@ -39,8 +44,8 @@ namespace ILCompiler.ReadyToRun
 
         public Vertex CreateTypeMap(NodeFactory factory, NativeWriter writer, Section section, INativeFormatTypeReferenceProvider externalReferences)
         {
-            Vertex typeMapGroupVertex = externalReferences.EncodeReferenceToType(writer, TypeMapGroup);
-            if (map.ThrowingMethodStub is not null)
+            Vertex typeMapGroupVertex = externalReferences.EncodeReferenceToType(writer, TypeMapGroup, TriggeringModule);
+            if (map.ThrowingMethodStub is not null || requiresRuntimeProcessing)
             {
                 // We don't write out the throwing method stub for R2R
                 // as emitting loose methods is not supported/very expensive.
@@ -56,7 +61,7 @@ namespace ILCompiler.ReadyToRun
             foreach ((string key, (TypeDesc type, _)) in map.TypeMap)
             {
                 Vertex keyVertex = writer.GetStringConstant(key);
-                Vertex valueVertex = externalReferences.EncodeReferenceToType(writer, type);
+                Vertex valueVertex = externalReferences.EncodeReferenceToType(writer, type, TriggeringModule);
                 Vertex entry = writer.GetTuple(keyVertex, valueVertex);
                 typeMapHashTable.Append((uint)VersionResilientHashCode.NameHashCode(Encoding.UTF8.GetBytes(key)), typeMapEntriesSection.Place(entry));
             }
@@ -69,16 +74,16 @@ namespace ILCompiler.ReadyToRun
         public override IEnumerable<CombinedDependencyListEntry> GetConditionalStaticDependencies(NodeFactory context) => [];
         public override IEnumerable<DependencyListEntry> GetStaticDependencies(NodeFactory context)
         {
-            yield return new DependencyListEntry(importProvider.GetImportToType(TypeMapGroup), $"Type map '{TypeMapGroup}' key type");
+            yield return new DependencyListEntry(importProvider.GetImportToType(TypeMapGroup, TriggeringModule), $"Type map '{TypeMapGroup}' key type");
 
-            if (map.ThrowingMethodStub is not null)
+            if (map.ThrowingMethodStub is not null || requiresRuntimeProcessing)
             {
                 yield break;
             }
 
             foreach (var entry in map.TypeMap)
             {
-                yield return new DependencyListEntry(importProvider.GetImportToType(entry.Value.type), $"External type map entry target for key '{entry.Key}'");
+                yield return new DependencyListEntry(importProvider.GetImportToType(entry.Value.type, TriggeringModule), $"External type map entry target for key '{entry.Key}'");
             }
         }
         public override IEnumerable<CombinedDependencyListEntry> SearchDynamicDependencies(List<DependencyNodeCore<NodeFactory>> markedNodes, int firstNode, NodeFactory context) => [];
