@@ -9,7 +9,12 @@ using Internal.TypeSystem;
 
 namespace ILCompiler.ReadyToRun
 {
-    internal class ReadyToRunProxyTypeMapNode(ModuleDesc triggeringModule, TypeDesc group, TypeMapMetadata.IProxyTypeMap map, ImportReferenceProvider importProvider) : SortableDependencyNode, IProxyTypeMapNode
+    internal class ReadyToRunProxyTypeMapNode(
+        ModuleDesc triggeringModule,
+        TypeDesc group,
+        TypeMapMetadata.IProxyTypeMap map,
+        ImportReferenceProvider importProvider,
+        bool requiresRuntimeProcessing) : SortableDependencyNode, IProxyTypeMapNode
     {
         public TypeDesc TypeMapGroup => group;
 
@@ -37,8 +42,8 @@ namespace ILCompiler.ReadyToRun
 
         public Vertex CreateTypeMap(NodeFactory factory, NativeWriter writer, Section section, INativeFormatTypeReferenceProvider ProxyReferences)
         {
-            Vertex typeMapGroupVertex = ProxyReferences.EncodeReferenceToType(writer, TypeMapGroup);
-            if (map.ThrowingMethodStub is not null)
+            Vertex typeMapGroupVertex = ProxyReferences.EncodeReferenceToType(writer, TypeMapGroup, TriggeringModule);
+            if (map.ThrowingMethodStub is not null || requiresRuntimeProcessing)
             {
                 // We don't write out the throwing method stub for R2R
                 // as emitting loose methods is not supported/very expensive.
@@ -55,8 +60,8 @@ namespace ILCompiler.ReadyToRun
 
             foreach ((TypeDesc type, TypeDesc targetType) in map.TypeMap)
             {
-                Vertex keyVertex = ProxyReferences.EncodeReferenceToType(writer, type);
-                Vertex valueVertex = ProxyReferences.EncodeReferenceToType(writer, targetType);
+                Vertex keyVertex = ProxyReferences.EncodeReferenceToType(writer, type, TriggeringModule);
+                Vertex valueVertex = ProxyReferences.EncodeReferenceToType(writer, targetType, TriggeringModule);
                 Vertex entry = writer.GetTuple(keyVertex, valueVertex);
                 typeMapHashTable.Append((uint)type.GetHashCode(), typeMapEntriesSection.Place(entry));
             }
@@ -69,17 +74,17 @@ namespace ILCompiler.ReadyToRun
         public override IEnumerable<CombinedDependencyListEntry> GetConditionalStaticDependencies(NodeFactory context) => [];
         public override IEnumerable<DependencyListEntry> GetStaticDependencies(NodeFactory context)
         {
-            yield return new DependencyListEntry(importProvider.GetImportToType(TypeMapGroup), $"Type map '{TypeMapGroup}' key type");
+            yield return new DependencyListEntry(importProvider.GetImportToType(TypeMapGroup, TriggeringModule), $"Type map '{TypeMapGroup}' key type");
 
-            if (map.ThrowingMethodStub is not null)
+            if (map.ThrowingMethodStub is not null || requiresRuntimeProcessing)
             {
                 yield break;
             }
 
             foreach (var entry in map.TypeMap)
             {
-                yield return new DependencyListEntry(importProvider.GetImportToType(entry.Key), $"Key type of Proxy type map entry");
-                yield return new DependencyListEntry(importProvider.GetImportToType(entry.Value), $"Proxy type map entry target for key '{entry.Key}'");
+                yield return new DependencyListEntry(importProvider.GetImportToType(entry.Key, TriggeringModule), $"Key type of Proxy type map entry");
+                yield return new DependencyListEntry(importProvider.GetImportToType(entry.Value, TriggeringModule), $"Proxy type map entry target for key '{entry.Key}'");
             }
         }
         public override IEnumerable<CombinedDependencyListEntry> SearchDynamicDependencies(List<DependencyNodeCore<NodeFactory>> markedNodes, int firstNode, NodeFactory context) => [];
