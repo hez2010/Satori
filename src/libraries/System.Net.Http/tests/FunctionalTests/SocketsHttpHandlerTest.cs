@@ -27,6 +27,21 @@ namespace System.Net.Http.Functional.Tests
 {
     using Configuration = System.Net.Test.Common.Configuration;
 
+    internal static class SocketsHttpHandlerTestExtensions
+    {
+        internal static int GetInitialHttp2MaxConcurrentStreams(this SocketsHttpHandler handler) =>
+            GetInitialHttp2MaxConcurrentStreamsCore(handler);
+
+        internal static void SetInitialHttp2MaxConcurrentStreams(this SocketsHttpHandler handler, int value) =>
+            SetInitialHttp2MaxConcurrentStreamsCore(handler, value);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "get_InitialHttp2MaxConcurrentStreams")]
+        private static extern int GetInitialHttp2MaxConcurrentStreamsCore(SocketsHttpHandler handler);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "set_InitialHttp2MaxConcurrentStreams")]
+        private static extern void SetInitialHttp2MaxConcurrentStreamsCore(SocketsHttpHandler handler, int value);
+    }
+
     public class CertificateSetup : IDisposable
     {
         public X509Certificate2 ServerCert => _pkiHolder.EndEntity;
@@ -453,6 +468,98 @@ namespace System.Net.Http.Functional.Tests
     public sealed class SocketsHttpHandler_HttpClientHandler_ServerCertificates_Test : HttpClientHandler_ServerCertificates_Test
     {
         public SocketsHttpHandler_HttpClientHandler_ServerCertificates_Test(ITestOutputHelper output) : base(output) { }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        [PlatformSpecific(TestPlatforms.Windows | TestPlatforms.Linux | TestPlatforms.OSX)]
+        public void CreateHttpClientHandler_AllowTlsResume_ConfiguresSslOptions(bool allowTlsResume)
+        {
+            using HttpClientHandler defaultHandler = CreateHttpClientHandler();
+            Assert.True(GetUnderlyingSocketsHttpHandler(defaultHandler).SslOptions.AllowTlsResume);
+
+            using HttpClientHandler instanceHandler = CreateHttpClientHandler(allowTlsResume: allowTlsResume);
+            Assert.Equal(allowTlsResume, GetUnderlyingSocketsHttpHandler(instanceHandler).SslOptions.AllowTlsResume);
+            Assert.Null(instanceHandler.ServerCertificateCustomValidationCallback);
+
+            using HttpClientHandler versionHandler = CreateHttpClientHandler(UseVersion, allowAllCertificates: false, allowTlsResume: allowTlsResume);
+            Assert.Equal(allowTlsResume, GetUnderlyingSocketsHttpHandler(versionHandler).SslOptions.AllowTlsResume);
+            Assert.Null(versionHandler.ServerCertificateCustomValidationCallback);
+
+            using HttpClientHandler stringHandler = CreateHttpClientHandler(UseVersion.ToString(), allowTlsResume: allowTlsResume);
+            Assert.Equal(allowTlsResume, GetUnderlyingSocketsHttpHandler(stringHandler).SslOptions.AllowTlsResume);
+            Assert.NotNull(stringHandler.ServerCertificateCustomValidationCallback);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        [PlatformSpecific(TestPlatforms.Windows | TestPlatforms.Linux | TestPlatforms.OSX)]
+        public async Task NoCallback_RevokedCertificate_RevocationChecking_MatchesExpected(bool checkRevocation)
+        {
+            using Configuration.Certificates.PkiHolder pkiHolder = Configuration.Certificates.GenerateCertificates("localhost");
+            pkiHolder.Intermediates[^1].Revoke(pkiHolder.EndEntity, pkiHolder.EndEntity.NotBefore);
+
+            using HttpClientHandler handler = CreateHttpClientHandler(allowTlsResume: false);
+            handler.CheckCertificateRevocationList = checkRevocation;
+            SocketsHttpHandler socketsHandler = GetUnderlyingSocketsHttpHandler(handler);
+
+            var policy = new X509ChainPolicy
+            {
+                TrustMode = X509ChainTrustMode.CustomRootTrust,
+                RevocationMode = socketsHandler.SslOptions.CertificateRevocationCheckMode,
+                RevocationFlag = X509RevocationFlag.EndCertificateOnly,
+                DisableCertificateDownloads = true,
+                CustomTrustStore = { pkiHolder.IssuerChain[^1] },
+            };
+            policy.ExtraStore.AddRange(pkiHolder.IssuerChain);
+            socketsHandler.SslOptions.CertificateChainPolicy = policy;
+
+            using HttpClient client = CreateHttpClient(handler);
+            await LoopbackServerFactory.CreateClientAndServerAsync(async uri =>
+            {
+                if (checkRevocation)
+                {
+                    HttpRequestException exception = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetAsync(uri));
+                    Assert.Equal(HttpRequestError.SecureConnectionError, exception.HttpRequestError);
+                    Assert.IsType<AuthenticationException>(exception.InnerException);
+                }
+                else
+                {
+                    using HttpResponseMessage response = await client.GetAsync(uri);
+                    Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                }
+            }, async server =>
+            {
+                try
+                {
+                    if (checkRevocation)
+                    {
+                        await server.AcceptConnectionAsync(_ => Task.CompletedTask);
+                    }
+                    else
+                    {
+                        await server.HandleRequestAsync();
+                    }
+                }
+                catch (Exception e) when (checkRevocation && (e is AuthenticationException or IOException))
+                {
+                    _output.WriteLine($"Expected certificate validation failure: {e}");
+                }
+            },
+            options: new GenericLoopbackOptions
+            {
+                UseSsl = true,
+                Certificate = pkiHolder.EndEntity,
+                SslProtocols = SslProtocols.None,
+            });
+
+            using X509Chain chain = new X509Chain();
+            chain.ChainPolicy = policy;
+            Assert.Equal(!checkRevocation, chain.Build(pkiHolder.EndEntity));
+            Assert.Equal(checkRevocation ? X509ChainStatusFlags.Revoked : X509ChainStatusFlags.NoError,
+                chain.ChainStatus.Aggregate(X509ChainStatusFlags.NoError, (flags, status) => flags | status.Status));
+        }
     }
 
     [SkipOnPlatform(TestPlatforms.Browser, "ResponseDrainTimeout is not supported on Browser")]
@@ -2645,6 +2752,34 @@ namespace System.Net.Http.Functional.Tests
         }
 
         [Theory]
+        [InlineData(1)]
+        [InlineData(42)]
+        [InlineData(int.MaxValue)]
+        public void InitialHttp2MaxConcurrentStreams_GetSet_Roundtrips(int value)
+        {
+            using var handler = new SocketsHttpHandler();
+            Assert.Equal(100, handler.GetInitialHttp2MaxConcurrentStreams()); // default value
+
+            handler.SetInitialHttp2MaxConcurrentStreams(value);
+            Assert.Equal(value, handler.GetInitialHttp2MaxConcurrentStreams());
+
+            handler.SetInitialHttp2MaxConcurrentStreams(100);
+            Assert.Equal(100, handler.GetInitialHttp2MaxConcurrentStreams());
+        }
+
+        [Theory]
+        [InlineData(0)]
+        [InlineData(-1)]
+        [InlineData(-42)]
+        [InlineData(int.MinValue)]
+        public void InitialHttp2MaxConcurrentStreams_InvalidValue_ThrowsArgumentOutOfRangeException(int value)
+        {
+            using var handler = new SocketsHttpHandler();
+            Assert.Throws<ArgumentOutOfRangeException>(() => handler.SetInitialHttp2MaxConcurrentStreams(value));
+            Assert.Equal(100, handler.GetInitialHttp2MaxConcurrentStreams());
+        }
+
+        [Theory]
         [InlineData(false)]
         [InlineData(true)]
         public async Task AfterDisposeSendAsync_GettersUsable_SettersThrow(bool dispose)
@@ -2687,6 +2822,7 @@ namespace System.Net.Http.Functional.Tests
                 Assert.Null(handler.ConnectCallback);
                 Assert.Null(handler.PlaintextStreamFilter);
                 Assert.Equal(HttpClientHandlerTestBase.DefaultInitialWindowSize, handler.InitialHttp2StreamWindowSize);
+                Assert.Equal(100, handler.GetInitialHttp2MaxConcurrentStreams());
 
                 Assert.Throws(expectedExceptionType, () => handler.AllowAutoRedirect = false);
                 Assert.Throws(expectedExceptionType, () => handler.AutomaticDecompression = DecompressionMethods.GZip);
@@ -2709,6 +2845,7 @@ namespace System.Net.Http.Functional.Tests
                 Assert.Throws(expectedExceptionType, () => handler.ConnectCallback = (context, token) => default);
                 Assert.Throws(expectedExceptionType, () => handler.PlaintextStreamFilter = (context, token) => default);
                 Assert.Throws(expectedExceptionType, () => handler.InitialHttp2StreamWindowSize = 128 * 1024);
+                Assert.Throws(expectedExceptionType, () => handler.SetInitialHttp2MaxConcurrentStreams(1));
             }
         }
     }
@@ -3012,6 +3149,62 @@ namespace System.Net.Http.Functional.Tests
 
                 await VerifySendTasks(sendTasks0).ConfigureAwait(false);
                 await VerifySendTasks(sendTasks2).ConfigureAwait(false);
+            }
+        }
+
+        [ConditionalTheory(typeof(SocketsHttpHandlerTest_Http2), nameof(SupportsAlpn))]
+        [InlineData(1)]
+        [InlineData(3)]
+        public async Task InitialHttp2MaxConcurrentStreams_LimitsStreamsUsedBeforeSettingsFrameIsReceived(int initialLimit)
+        {
+            const int RequestCount = 5;
+
+            using Http2LoopbackServer server = Http2LoopbackServer.CreateServer();
+
+            using SocketsHttpHandler handler = CreateHandler();
+            handler.EnableMultipleHttp2Connections = false;
+            handler.SetInitialHttp2MaxConcurrentStreams(initialLimit);
+            using HttpClient client = CreateHttpClient(handler);
+
+            var sendTasks = new List<Task<HttpResponseMessage>>();
+            AcquireAllStreamSlots(server, client, sendTasks, RequestCount);
+
+            await using Http2LoopbackConnection connection = await server.AcceptConnectionAsync().WaitAsync(TestHelper.PassingTestTimeout);
+
+            // Read the client's SETTINGS frame, but don't send ours yet.
+            await connection.ReadSettingsAsync().WaitAsync(TestHelper.PassingTestTimeout);
+
+            // Only 'initialLimit' requests may be sent before we advertise our own limit.
+            var streamIds = new List<int>(await AcceptRequests(connection, initialLimit));
+            await AssertNoRequestHeadersSentAsync(connection);
+
+            // Advertise a higher limit. The remaining requests should now be sent.
+            await connection.SendSettingsAsync(ackTimeout: null, [new SettingsEntry { SettingId = SettingId.MaxConcurrentStreams, Value = 100 }]);
+
+            streamIds.AddRange(await AcceptRequests(connection, RequestCount - initialLimit));
+
+            await SendResponses(connection, streamIds);
+            await VerifySendTasks(sendTasks);
+        }
+
+        private static async Task AssertNoRequestHeadersSentAsync(Http2LoopbackConnection connection)
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+            while (true)
+            {
+                Frame frame;
+                try
+                {
+                    frame = await connection.ReadFrameAsync(cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                Assert.NotNull(frame);
+                Assert.NotEqual(FrameType.Headers, frame.Type);
             }
         }
 
@@ -4599,7 +4792,7 @@ namespace System.Net.Http.Functional.Tests
 
                     policy.ExtraStore.AddRange(_certificateSetup.ServerChain);
                     policy.CustomTrustStore.Add(_certificateSetup.ServerChain[^1]);
-                    socketsHandler.SslOptions = new SslClientAuthenticationOptions() { CertificateChainPolicy = policy };
+                    socketsHandler.SslOptions = new SslClientAuthenticationOptions() { CertificateChainPolicy = policy, AllowTlsResume = false };
                     using HttpClient client = CreateHttpClient(handler);
                     client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact;
                     HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, uri) { Version = UseVersion, VersionPolicy = HttpVersionPolicy.RequestVersionExact };
@@ -4632,7 +4825,7 @@ namespace System.Net.Http.Functional.Tests
 
                     policy.ExtraStore.AddRange(_certificateSetup.ServerChain);
                     policy.CustomTrustStore.Add(_certificateSetup.ServerChain[^1]);
-                    socketsHandler.SslOptions = new SslClientAuthenticationOptions() { CertificateChainPolicy = policy };
+                    socketsHandler.SslOptions = new SslClientAuthenticationOptions() { CertificateChainPolicy = policy, AllowTlsResume = false };
                     using HttpClient client = CreateHttpClient(handler);
                     client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact;
                     HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get, uri) { Version = UseVersion, VersionPolicy = HttpVersionPolicy.RequestVersionExact };
@@ -4671,7 +4864,7 @@ namespace System.Net.Http.Functional.Tests
 
                     policy.ExtraStore.AddRange(_certificateSetup.ServerChain);
                     policy.CustomTrustStore.Add(_certificateSetup.ServerChain[^1]);
-                    socketsHandler.SslOptions = new SslClientAuthenticationOptions() { CertificateChainPolicy = policy };
+                    socketsHandler.SslOptions = new SslClientAuthenticationOptions() { CertificateChainPolicy = policy, AllowTlsResume = false };
 
                     using HttpClient client = CreateHttpClient(handler);
                     client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact;
