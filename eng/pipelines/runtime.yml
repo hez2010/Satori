@@ -50,7 +50,7 @@ pr:
 variables:
   - template: /eng/pipelines/common/variables.yml
   - name: enableHelixJobMonitor
-    value: false
+    value: true
   - template: /eng/pipelines/helix-platforms.yml
 
 extends:
@@ -65,6 +65,10 @@ extends:
           - template: /eng/pipelines/common/evaluate-default-paths.yml
 
     - stage: Build
+      variables:
+      # The standalone monitor does not inherit the submitter jobs' variable groups.
+      - ${{ if eq(variables['System.TeamProject'], 'internal') }}:
+        - group: DotNet-HelixApi-Access
       jobs:
       - ${{ if eq(variables['enableHelixJobMonitor'], true) }}:
         - template: /eng/common/core-templates/job/helix-job-monitor.yml
@@ -749,7 +753,7 @@ extends:
           platforms:
           - freebsd_x64
           - linux_riscv64
-          - linux_loongarch64
+          # linux_loongarch64 disabled: https://github.com/dotnet/runtime/issues/137648
           - openbsd_x64
           jobParameters:
             testScope: innerloop

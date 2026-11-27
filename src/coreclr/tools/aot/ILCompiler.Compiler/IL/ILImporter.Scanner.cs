@@ -1002,7 +1002,7 @@ namespace Internal.IL
                         _canonMethod,
                         methodToLookup.GetCanonMethodTarget(CanonicalFormKind.Specific));
 
-                if (exactContextNeedsRuntimeLookup)
+                if (_compilation.NeedsRuntimeLookup(ReadyToRunHelperId.DispatchCell, methodToLookup))
                 {
                     _dependencies.Add(GetGenericLookupHelper(ReadyToRunHelperId.DispatchCell, methodToLookup), reason);
                 }
@@ -1199,7 +1199,9 @@ namespace Internal.IL
             if (opcode == ILOpcode.brfalse && _isInstCheckPatternAnalyzer.IsIsInstBranch)
             {
                 TypeDesc isinstCheckType = (TypeDesc)_canonMethodIL.GetObject(_isInstCheckPatternAnalyzer.Token);
-                if (ConstructedEETypeNode.CreationAllowed(isinstCheckType)
+                // Nullable<T> isinst checks operate on boxed T, not a constructed Nullable<T> MethodTable.
+                if (!isinstCheckType.IsNullable
+                    && ConstructedEETypeNode.CreationAllowed(isinstCheckType)
                     // Below makes sure we don't need to worry about variance
                     && !isinstCheckType.ConvertToCanonForm(CanonicalFormKind.Specific).IsCanonicalSubtype(CanonicalFormKind.Any)
                     // However, we still need to worry about variant-by-size casting with arrays

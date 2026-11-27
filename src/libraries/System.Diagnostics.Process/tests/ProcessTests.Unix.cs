@@ -93,34 +93,26 @@ namespace System.Diagnostics.Tests
             }, options).Dispose();
         }
 
-        [Fact]
+        [ConditionalFact(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
         [OuterLoop("Opens program")]
         [SkipOnPlatform(TestPlatforms.MacCatalyst, "In App Sandbox mode, the process doesn't have read access to the binary.")]
         [SkipOnPlatform(TestPlatforms.iOS | TestPlatforms.tvOS | TestPlatforms.Android | TestPlatforms.Browser, "Not supported on iOS/tvOS/Android/Browser.")]
         public void ProcessStart_DirectoryNameInCurDirectorySameAsFileNameInExecDirectory_Success()
         {
-            string fileToOpen = "dotnet";
-            string curDir = Environment.CurrentDirectory;
-            string dotnetFolder = Path.Combine(Path.GetTempPath(),"dotnet");
-            bool shouldDelete = !Directory.Exists(dotnetFolder);
-            try
-            {
-                Directory.SetCurrentDirectory(Path.GetTempPath());
-                Directory.CreateDirectory(dotnetFolder);
+            Directory.CreateDirectory(Path.Combine(TestDirectory, "dotnet"));
 
+            RemoteExecutor.Invoke(StartDotnet, new RemoteInvokeOptions
+            {
+                StartInfo = new ProcessStartInfo { WorkingDirectory = TestDirectory }
+            }).Dispose();
+
+            static void StartDotnet()
+            {
+                string fileToOpen = "dotnet";
                 using (var px = Process.Start(fileToOpen))
                 {
                     Assert.NotNull(px);
                 }
-            }
-            finally
-            {
-                if (shouldDelete)
-                {
-                    Directory.Delete(dotnetFolder);
-                }
-
-                Directory.SetCurrentDirectory(curDir);
             }
         }
 
@@ -168,7 +160,13 @@ namespace System.Diagnostics.Tests
                     Assert.NotNull(px);
                     if (!OperatingSystem.IsMacOS()) // on OSX, process name is dotnet for some reason. Refer to https://github.com/dotnet/runtime/issues/23525
                     {
-                        Assert.Equal(programToOpen, px.ProcessName);
+                        // ProcessName may transiently reflect the parent's thread name immediately
+                        // after Process.Start if execve() hasn't finished updating it yet, so retry briefly.
+                        RetryHelper.Execute(() =>
+                        {
+                            px.Refresh();
+                            Assert.Equal(programToOpen, px.ProcessName);
+                        });
                     }
                     px.Kill();
                     px.WaitForExit();
@@ -178,9 +176,7 @@ namespace System.Diagnostics.Tests
         }
 
         [Fact]
-        [SkipOnPlatform(TestPlatforms.OSX | TestPlatforms.MacCatalyst, "On OSX, ProcessName returns the script interpreter.")]
-        [SkipOnPlatform(TestPlatforms.iOS | TestPlatforms.tvOS, "Not supported on iOS or tvOS.")]
-        [ActiveIssue("https://github.com/dotnet/runtime/issues/13757")]
+        [PlatformSpecific(TestPlatforms.Linux)] // test reads /proc/<pid>/stat and /proc/<pid>/cmdline
         public void ProcessNameMatchesScriptName()
         {
             string scriptName = GetTestFileName();
@@ -198,12 +194,18 @@ namespace System.Diagnostics.Tests
             {
                 try
                 {
-                    string stat = File.ReadAllText($"/proc/{process.Id}/stat");
-                    Assert.Contains($"({scriptName.Substring(0, 15)})", stat);
-                    string cmdline = File.ReadAllText($"/proc/{process.Id}/cmdline");
-                    Assert.Equal($"/bin/sh\0{filename}\0", cmdline);
+                    // The child's procfs state and ProcessName may transiently reflect the parent
+                    // immediately after Process.Start if execve() hasn't finished updating them yet, so retry briefly.
+                    RetryHelper.Execute(() =>
+                    {
+                        string stat = File.ReadAllText($"/proc/{process.Id}/stat");
+                        Assert.Contains($"({scriptName.Substring(0, 15)})", stat);
+                        string cmdline = File.ReadAllText($"/proc/{process.Id}/cmdline");
+                        Assert.Equal($"/bin/sh\0{filename}\0", cmdline);
 
-                    Assert.Equal(scriptName, process.ProcessName);
+                        process.Refresh();
+                        Assert.Equal(scriptName, process.ProcessName);
+                    });
                 }
                 finally
                 {
@@ -775,6 +777,64 @@ namespace System.Diagnostics.Tests
             }
             bool processReaped = await TryWaitProcessReapedAsync(processId, timeoutMs: 30000);
             Assert.True(processReaped);
+        }
+
+        [ConditionalTheory(typeof(RemoteExecutor), nameof(RemoteExecutor.IsSupported))]
+        [PlatformSpecific(TestPlatforms.OSX)]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void WaitForExit_StoppedChild_DoesNotPreventReapingOtherChildren(bool useAsync)
+        {
+            RemoteExecutor.Invoke(async useAsyncString =>
+            {
+                const uint StoppedProcessStatus = 4; // SSTOP in sys/proc.h.
+                using Process stopped = Process.Start("/bin/sleep", "300");
+                using Process exiting = Process.Start("/bin/sleep", "300");
+                int stoppedPid = stopped.Id;
+                int exitingPid = exiting.Id;
+                int killSignal = Interop.Sys.GetPlatformSignalNumber(PosixSignal.SIGKILL);
+                using var sigChildReceived = new ManualResetEventSlim();
+                using PosixSignalRegistration registration = PosixSignalRegistration.Create(PosixSignal.SIGCHLD, context =>
+                {
+                    context.Cancel = true;
+                    sigChildReceived.Set();
+                });
+
+                try
+                {
+                    Assert.Equal(0, Interop.Sys.Kill(stoppedPid, Interop.Sys.GetPlatformSIGSTOP()));
+
+                    Assert.True(SpinWait.SpinUntil(
+                        () => Interop.libproc.GetProcessInfoById(stoppedPid) is { } info &&
+                            info.pbsd.pbi_status == StoppedProcessStatus, WaitInMS));
+
+                    sigChildReceived.Reset();
+                    Assert.Equal(0, Interop.Sys.Kill(Environment.ProcessId, Interop.Sys.GetPlatformSignalNumber(PosixSignal.SIGCHLD)));
+                    Assert.True(sigChildReceived.Wait(WaitInMS));
+
+                    Assert.Equal(0, Interop.Sys.Kill(exitingPid, killSignal));
+                    if (bool.Parse(useAsyncString))
+                    {
+                        using var cts = new CancellationTokenSource(WaitInMS);
+                        await exiting.WaitForExitAsync(cts.Token);
+                    }
+                    else
+                    {
+                        Assert.True(exiting.WaitForExit(WaitInMS));
+                    }
+                    Assert.True(exiting.HasExited);
+                }
+                finally
+                {
+                    // Bypass managed process locks so cleanup also works if the reaper is stuck.
+                    Assert.Equal(0, Interop.Sys.Kill(stoppedPid, killSignal));
+                    Assert.True(stopped.WaitForExit(WaitInMS));
+                    exiting.Kill();
+                    Assert.True(exiting.WaitForExit(WaitInMS));
+                }
+
+                return RemoteExecutor.SuccessExitCode;
+            }, useAsync.ToString()).Dispose();
         }
 
         private static Process CreateShortProcess()

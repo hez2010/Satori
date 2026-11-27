@@ -620,6 +620,11 @@ namespace ILCompiler.DependencyAnalysis
                 return new ProxyTypeMapRequestNode(type);
             });
 
+            _typeLoaderArgumentGates = new NodeCache<(TypeDesc, int), TypeLoaderArgumentGateNode>(key =>
+            {
+                return new TypeLoaderArgumentGateNode(key.Item1, key.Item2);
+            });
+
             _analysisCharacteristics = new NodeCache<string, AnalysisCharacteristicNode>(c =>
             {
                 return new AnalysisCharacteristicNode(c);
@@ -1599,6 +1604,13 @@ namespace ILCompiler.DependencyAnalysis
             return _externalTypeMapRequests.GetOrAdd(type);
         }
 
+        private NodeCache<(TypeDesc, int), TypeLoaderArgumentGateNode> _typeLoaderArgumentGates;
+
+        public TypeLoaderArgumentGateNode TypeLoaderArgumentGate(TypeDesc type, int argumentIndex)
+        {
+            return _typeLoaderArgumentGates.GetOrAdd((type, argumentIndex));
+        }
+
         private NodeCache<TypeDesc, ProxyTypeMapRequestNode> _proxyTypeMapRequests;
 
         public ProxyTypeMapRequestNode ProxyTypeMapRequest(TypeDesc type)
@@ -1703,7 +1715,7 @@ namespace ILCompiler.DependencyAnalysis
         {
             public Vertex EncodeReferenceToMethod(NativeWriter writer, MethodDesc method)
                 => writer.GetUnsignedConstant(table.GetIndex(factory.MethodEntrypoint(method)));
-            public Vertex EncodeReferenceToType(NativeWriter writer, TypeDesc type)
+            public Vertex EncodeReferenceToType(NativeWriter writer, TypeDesc type, ModuleDesc module)
                 => writer.GetUnsignedConstant(table.GetIndex(factory.NecessaryTypeSymbol(type)));
         }
 

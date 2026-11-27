@@ -40,6 +40,8 @@ namespace ILCompiler.DependencyAnalysis
 
         public override IEnumerable<CombinedDependencyListEntry> GetConditionalStaticDependencies(NodeFactory context)
         {
+            var typeLoaderDependencies = new List<CombinedDependencyListEntry>();
+
             foreach (var (key, value) in _mapEntries)
             {
                 yield return new CombinedDependencyListEntry(
@@ -49,14 +51,15 @@ namespace ILCompiler.DependencyAnalysis
 
                 // If the key type has a canonical form, it could be created at runtime by the type loader.
                 // If there is a type loader template for it, create the generic type instantiation eagerly.
-                TypeDesc canonKey = key.ConvertToCanonForm(CanonicalFormKind.Specific);
-                if (canonKey != key && GenericTypesTemplateMap.IsEligibleToHaveATemplate(canonKey))
-                {
-                    yield return new CombinedDependencyListEntry(
-                        context.MaximallyConstructableType(key),
-                        context.NativeLayout.TemplateTypeLayout(canonKey),
-                        "Proxy map entry that could be loaded at runtime");
-                }
+                typeLoaderDependencies.Clear();
+                RuntimeConstructableTypeDependencies.AddTypeLoaderDependencies(
+                    typeLoaderDependencies,
+                    context,
+                    context.MaximallyConstructableType(key),
+                    "Proxy map entry that could be loaded at runtime");
+
+                foreach (CombinedDependencyListEntry entry in typeLoaderDependencies)
+                    yield return entry;
             }
         }
 
@@ -84,14 +87,14 @@ namespace ILCompiler.DependencyAnalysis
 
             foreach ((IEETypeNode keyNode, IEETypeNode valueNode) in GetMarkedEntries(factory))
             {
-                Vertex keyVertex = externalReferences.EncodeReferenceToType(writer, keyNode.Type);
-                Vertex valueVertex = externalReferences.EncodeReferenceToType(writer, valueNode.Type);
+                Vertex keyVertex = externalReferences.EncodeReferenceToType(writer, keyNode.Type, null);
+                Vertex valueVertex = externalReferences.EncodeReferenceToType(writer, valueNode.Type, null);
                 Vertex entry = writer.GetTuple(keyVertex, valueVertex);
                 typeMapHashTable.Append((uint)keyNode.Type.GetHashCode(), section.Place(entry));
             }
 
             Vertex typeMapStateVertex = writer.GetUnsignedConstant(1); // Valid type map state
-            Vertex typeMapGroupVertex = externalReferences.EncodeReferenceToType(writer, TypeMapGroup);
+            Vertex typeMapGroupVertex = externalReferences.EncodeReferenceToType(writer, TypeMapGroup, null);
             Vertex tuple = writer.GetTuple(typeMapGroupVertex, typeMapStateVertex, typeMapHashTable);
             return section.Place(tuple);
         }

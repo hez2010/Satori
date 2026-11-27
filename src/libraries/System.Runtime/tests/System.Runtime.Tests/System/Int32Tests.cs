@@ -310,6 +310,11 @@ namespace System.Tests
             // If PositiveSign and NegativeSign are the same, PositiveSign is preferred
             yield return new object[] { "|123", NumberStyles.AllowLeadingSign, samePositiveNegativeFormat, 123 };
 
+            // When custom signs overlap, the longer sign is preferred.
+            yield return new object[] { "-+123", NumberStyles.AllowLeadingSign, new NumberFormatInfo { PositiveSign = "-", NegativeSign = "-+" }, -123 };
+            yield return new object[] { "-+123", NumberStyles.AllowLeadingSign, new NumberFormatInfo { PositiveSign = "-+", NegativeSign = "-" }, 123 };
+            yield return new object[] { " +123", NumberStyles.AllowLeadingSign, new NumberFormatInfo { PositiveSign = "\u00A0", NegativeSign = " +" }, -123 };
+
             // Empty PositiveSign or NegativeSign
             yield return new object[] { "100", NumberStyles.AllowLeadingSign, emptyPositiveFormat, 100 };
             yield return new object[] { "100", NumberStyles.AllowLeadingSign, emptyNegativeFormat, 100 };
@@ -923,6 +928,14 @@ namespace System.Tests
             Assert.DoesNotContain("A0", fe.Message, StringComparison.Ordinal);
             Assert.DoesNotContain("ReadOnlySpan", fe.Message, StringComparison.Ordinal);
             Assert.DoesNotContain("\uFFFD", fe.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public static void Parse_Utf8Span_InvalidUtf8GroupSeparator()
+        {
+            NumberFormatInfo format = new() { NumberGroupSeparator = " " };
+
+            Assert.False(int.TryParse([(byte)'1', 0xA0, (byte)'2'], NumberStyles.AllowThousands, format, out _));
         }
 
         [Theory]
